@@ -2,6 +2,13 @@
 
 更早的版本见 [GitHub Releases](https://github.com/hongmengchen/kube-token/releases)。
 
+## [0.7.0] - 2026-11-18
+
+### 新增
+
+- kube-token 有了自己的标志：`docs/logo.svg`（六边形 + 菱形）
+- TUI 左上角用纯文字画出同系列的招牌（六边形 + K），标题、统计和更新状态排在它右边；不依赖图片、字体或终端图形支持
+
 ## [0.6.2] - 2026-11-18
 
 ### 变更

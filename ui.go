@@ -784,17 +784,38 @@ func (m model) View() string {
 	return "\n" + body + "\n"
 }
 
+// logoLines 是终端里的招牌，和 docs/logo.svg 同一套几何：六边形 + K（kube / kubeconfig）；
+// 只用窄字符，不碰 ◆ ● 这类宽度含糊的符号，字符画在任何终端都不会错位
+var logoLines = []string{
+	"╱───╲",
+	"│ K │",
+	"╲───╱",
+}
+
+// withLogo 把 logo 摆在左边，右边逐行接上文字
+func (m model) withLogo(lines ...string) string {
+	var b strings.Builder
+	for i, l := range logoLines {
+		b.WriteString(styles.Accent.Render(l))
+		if i < len(lines) && lines[i] != "" {
+			b.WriteString("  " + lines[i])
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
 func (m model) viewList() string {
 	var b strings.Builder
-	b.WriteString(styles.Title.Render("kube-token") + styles.Dim.Render("  v"+version+"  选择要更新的 user"))
-	b.WriteString("\n")
+	stats := styles.Dim.Render("没有发现可用的 kubeconfig")
 	if len(m.entries) > 0 {
-		b.WriteString(styles.Dim.Render(fmt.Sprintf("  %d 个 user · %d 个文件", len(m.entries), countFiles(m.entries))))
-	} else {
-		b.WriteString(styles.Dim.Render("  没有发现可用的 kubeconfig"))
+		stats = styles.Dim.Render(fmt.Sprintf("%d 个 user · %d 个文件", len(m.entries), countFiles(m.entries)))
 	}
-	b.WriteString(m.updateStatus())
-	b.WriteString("\n\n")
+	b.WriteString(m.withLogo(
+		styles.Title.Render("kube-token")+styles.Dim.Render("  v"+version+"  选择要更新的 user"),
+		stats+m.updateStatus(),
+	))
+	b.WriteString("\n")
 
 	for i, e := range m.entries {
 		b.WriteString(m.renderCard(e, i == m.cursor))

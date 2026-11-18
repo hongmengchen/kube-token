@@ -1,5 +1,8 @@
 # kube-token
 
+<p align="center"><img src="docs/logo.svg" width="96" height="96" alt="kube-token 标志"></p>
+<p align="center">六边形是集群，中间那颗菱形是换上去的新凭证。</p>
+
 [![CI](https://github.com/hongmengchen/kube-token/actions/workflows/ci.yml/badge.svg)](https://github.com/hongmengchen/kube-token/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/hongmengchen/kube-token)](https://github.com/hongmengchen/kube-token/releases)
 [![License](https://img.shields.io/github/license/hongmengchen/kube-token)](LICENSE)
@@ -9,15 +12,16 @@
 给 EKS / K8s 这类需要手动更新 `users[].user.token` 的场景用。启动、选 user、粘 token、回车，剩下的备份和验证都由它做。
 
 ```
-kube-token  v0.6.1  选择要更新的 user
-  2 个 user · 2 个文件 · 已是最新
+╱───╲  kube-token  v0.7.0  选择要更新的 user
+│ K │  2 个 user · 2 个文件 · 已是最新
+╲───╱
 │ ~/.kube/config                                                    当前 context
 │ user     arn:aws:eks:us-east-1:123456789012:cluster/example
 │ token    eyJhbGci…-llw  ·  剩 14m02s
 │ ~/.kube/prod.yaml
 │ user     dev-sa
 │ token    eyJhbGci…9pg  ·  已过期 3h
-  ↑↓ 选择  ·  enter 更新 token  ·  r 重新扫描  ·  q 退出
+  ↑↓ 选择  ·  enter 手动粘贴  ·  v 从 Vault 获取  ·  c 配置  ·  q 退出
 ```
 
 ## 特性

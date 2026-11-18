@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-labelledby="kube-token-title">
+  <title id="kube-token-title">kube-token</title>
+  <rect width="128" height="128" rx="28" fill="#0F172A"/>
+  <path d="M64 20 102 42v44L64 108 26 86V42z" fill="none" stroke="#CBD5E1" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M64 47 81 64 64 81 47 64z" fill="#60A5FA"/>
+</svg>
