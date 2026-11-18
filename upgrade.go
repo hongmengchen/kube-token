@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -17,13 +18,15 @@ import (
 
 const repoSlug = "hongmengchen/kube-token"
 
+type releaseAsset struct {
+	Name string `json:"name"`
+	URL  string `json:"browser_download_url"`
+}
+
 type releaseInfo struct {
-	TagName string `json:"tag_name"`
-	HTMLURL string `json:"html_url"`
-	Assets  []struct {
-		Name string `json:"name"`
-		URL  string `json:"browser_download_url"`
-	} `json:"assets"`
+	TagName string         `json:"tag_name"`
+	HTMLURL string         `json:"html_url"`
+	Assets  []releaseAsset `json:"assets"`
 }
 
 // runUpgrade 实现 `kube-token upgrade`
@@ -35,6 +38,24 @@ func runUpgrade(args []string) int {
 		return 1
 	}
 
+	// 管道/脚本/CI 里没有终端，退回纯文本，别往日志里塞转义序列
+	if *check || !isInteractive() {
+		return runUpgradePlain(*force, *check)
+	}
+	return runUpgradeTUI(*force)
+}
+
+// isInteractive 判断 stdout 是不是真的终端
+func isInteractive() bool {
+	st, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return st.Mode()&os.ModeCharDevice != 0
+}
+
+// runUpgradePlain 是给脚本用的老路径：一行一步，没有动画
+func runUpgradePlain(force, check bool) int {
 	fmt.Printf("当前版本: %s\n", version)
 
 	rel, err := fetchLatestRelease()
@@ -47,11 +68,11 @@ func runUpgrade(args []string) int {
 	latest := strings.TrimPrefix(rel.TagName, "v")
 	fmt.Printf("最新版本: %s\n", latest)
 
-	if !*force && !isNewer(latest, version) {
+	if !force && !isNewer(latest, version) {
 		fmt.Println("已是最新版本。")
 		return 0
 	}
-	if *check {
+	if check {
 		fmt.Printf("有新版本可用: %s，运行 kube-token upgrade 更新\n", rel.TagName)
 		return 0
 	}
@@ -91,7 +112,57 @@ func runUpgrade(args []string) int {
 	return 0
 }
 
+// fetchLatestRelease 先走 releases/latest 的跳转（不吃 API 限流），失败再回落到 API
 func fetchLatestRelease() (*releaseInfo, error) {
+	if rel, err := fetchLatestViaRedirect(); err == nil {
+		return rel, nil
+	}
+	return fetchLatestViaAPI()
+}
+
+func fetchLatestViaRedirect() (*releaseInfo, error) {
+	client := &http.Client{
+		Timeout: 20 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse // 只要 Location，不跟过去
+		},
+	}
+	req, err := http.NewRequest(http.MethodGet, "https://github.com/"+repoSlug+"/releases/latest", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "kube-token/"+version)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusMovedPermanently {
+		return nil, fmt.Errorf("releases/latest 返回 %s", resp.Status)
+	}
+	loc, err := resp.Location()
+	if err != nil {
+		return nil, err
+	}
+	tag := strings.TrimSpace(path.Base(strings.TrimRight(loc.Path, "/")))
+	if !strings.HasPrefix(tag, "v") {
+		return nil, fmt.Errorf("没能从跳转里解析出版本号: %s", loc.String())
+	}
+
+	asset := assetName(runtime.GOOS, runtime.GOARCH)
+	return &releaseInfo{
+		TagName: tag,
+		HTMLURL: "https://github.com/" + repoSlug + "/releases/tag/" + tag,
+		Assets: []releaseAsset{{
+			Name: asset,
+			URL:  "https://github.com/" + repoSlug + "/releases/download/" + tag + "/" + asset,
+		}},
+	}, nil
+}
+
+func fetchLatestViaAPI() (*releaseInfo, error) {
 	client := &http.Client{Timeout: 20 * time.Second}
 	req, err := http.NewRequest(http.MethodGet, "https://api.github.com/repos/"+repoSlug+"/releases/latest", nil)
 	if err != nil {
@@ -134,39 +205,59 @@ func assetName(goos, goarch string) string {
 
 // replaceBinary 下载到同目录的临时文件再原子替换，避免半截文件
 func replaceBinary(exe, url string) error {
-	dir := filepath.Dir(exe)
-
-	client := &http.Client{Timeout: 5 * time.Minute}
-	resp, err := client.Get(url)
+	tmp, err := downloadBinary(url, filepath.Dir(exe), nil)
 	if err != nil {
 		return err
 	}
+	return installBinary(tmp, exe)
+}
+
+// downloadBinary 下载到 dir 下的临时文件；onProgress 按写入量回调（可为 nil）
+func downloadBinary(url, dir string, onProgress func(done, total int64)) (string, error) {
+	client := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := client.Get(url)
+	if err != nil {
+		return "", err
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("下载失败: %s", resp.Status)
+		return "", fmt.Errorf("下载失败: %s", resp.Status)
 	}
 
 	tmp, err := os.CreateTemp(dir, ".kube-token-update-*")
 	if err != nil {
-		return fmt.Errorf("无法在 %s 写入（试试 sudo kube-token upgrade）: %w", dir, err)
+		return "", fmt.Errorf("无法在 %s 写入（试试 sudo kube-token upgrade）: %w", dir, err)
 	}
 	tmpName := tmp.Name()
 	cleanup := func() { _ = os.Remove(tmpName) }
 
-	n, err := io.Copy(tmp, resp.Body)
+	total := resp.ContentLength
+	reader := io.Reader(resp.Body)
+	if onProgress != nil {
+		reader = &progressReader{r: resp.Body, total: total, onProgress: onProgress}
+	}
+
+	n, err := io.Copy(tmp, reader)
 	closeErr := tmp.Close()
 	if err != nil {
 		cleanup()
-		return fmt.Errorf("下载中断: %w", err)
+		return "", fmt.Errorf("下载中断: %w", err)
 	}
 	if closeErr != nil {
 		cleanup()
-		return closeErr
+		return "", closeErr
 	}
 	if n < 100000 {
 		cleanup()
-		return fmt.Errorf("下载的文件只有 %d 字节，可能不是二进制", n)
+		return "", fmt.Errorf("下载的文件只有 %d 字节，可能不是二进制", n)
 	}
+	return tmpName, nil
+}
+
+// installBinary 把临时文件原子换到正式位置
+func installBinary(tmpName, exe string) error {
+	cleanup := func() { _ = os.Remove(tmpName) }
+
 	if err := os.Chmod(tmpName, 0o755); err != nil {
 		cleanup()
 		return err
@@ -187,6 +278,26 @@ func replaceBinary(exe, url string) error {
 		return fmt.Errorf("无法覆盖 %s（权限不足？可试 sudo kube-token upgrade，或用安装脚本重装）: %w", exe, err)
 	}
 	return nil
+}
+
+// progressReader 在拷贝过程中回调已下载字节数
+type progressReader struct {
+	r          io.Reader
+	total      int64
+	done       int64
+	onProgress func(done, total int64)
+	last       time.Time
+}
+
+func (p *progressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	p.done += int64(n)
+	now := time.Now()
+	if err == nil && now.Sub(p.last) > 80*time.Millisecond {
+		p.last = now
+		p.onProgress(p.done, p.total)
+	}
+	return n, err
 }
 
 // isNewer 比较点分版本号：isNewer("0.2.0", "0.1.9") == true
