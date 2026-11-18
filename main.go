@@ -11,7 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-var version = "0.4.1"
+var version = "0.4.2"
 
 func usage() {
 	fmt.Fprintf(os.Stderr, `kube-token %s — 粘贴新 token 直接替换 kubeconfig 里的旧值
@@ -19,6 +19,7 @@ func usage() {
 用法:
   kube-token                        打开 TUI
   kube-token list                   列出扫描到的 user（同 -list）
+  kube-token skill                  把 agent skill 装到 ~/.claude/skills（旧版本会覆盖）
   kube-token upgrade [--check]      更新到最新版本
   kube-token version                打印版本
 
@@ -46,6 +47,8 @@ func main() {
 			entries, errs := scanEntries()
 			printList(entries, errs)
 			return
+		case "skill":
+			os.Exit(runSkill(os.Args[2:]))
 		case "help":
 			usage()
 			return

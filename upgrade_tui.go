@@ -217,7 +217,11 @@ func (m *upgradeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case upgradeInstallStartMsg:
 		tmp, exe := m.tmp, m.exe
 		return m, func() tea.Msg {
-			return upgradeInstalledMsg{err: installBinary(tmp, exe)}
+			if err := installBinary(tmp, exe); err != nil {
+				return upgradeInstalledMsg{err: err}
+			}
+			refreshSkillAfterUpgrade(exe)
+			return upgradeInstalledMsg{}
 		}
 
 	case upgradeInstalledMsg:

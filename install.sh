@@ -25,6 +25,7 @@ usage() {
 环境变量：
   INSTALL_DIR          同 --bindir
   NO_ANIMATION=1       不播放安装动画（管道、CI 里会自动关闭）
+  NO_PROMPT=1          不询问是否安装 agent skill
 EOF
 }
 
@@ -279,6 +280,22 @@ else
 fi
 trap - EXIT INT TERM
 "$target" --version 2>/dev/null || true
+
+# ---- agent skill（可选，只在本机终端里问） ----
+# 用 `curl | sh` 时 stdin 是脚本本身，所以从 /dev/tty 读回答
+if [ "$ANIM" = 1 ] && [ -z "${NO_PROMPT:-}" ] && [ -r /dev/tty ]; then
+  printf '\n把 agent skill 装到 ~/.claude/skills（让 agent 会用本工具）？[Y/n] '
+  ans=""
+  read -r ans </dev/tty || ans=y
+  case "$ans" in
+    [nN]*) dim "已跳过。以后随时可以运行: $BIN skill" ;;
+    *)
+      if "$target" skill; then :; else
+        dim "skill 没装上，之后可以运行: $BIN skill"
+      fi
+      ;;
+  esac
+fi
 
 if in_path "$BIN_DIR"; then
   echo

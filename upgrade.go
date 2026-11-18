@@ -106,6 +106,8 @@ func runUpgradePlain(force, check bool) int {
 	}
 
 	fmt.Printf("已更新到 %s（%s）\n", rel.TagName, exe)
+	// 装过 agent skill 的话，让新二进制把它刷成配套版本
+	refreshSkillAfterUpgrade(exe)
 	if runtime.GOOS == "windows" {
 		fmt.Println("新开的终端会使用新版本；当前窗口里的命令需要重开或重新安装。")
 	}

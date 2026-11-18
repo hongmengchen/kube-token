@@ -8,6 +8,7 @@
 #
 # 环境变量：
 #   NO_ANIMATION=1   不播放安装动画（输出被重定向时会自动关闭）
+#   NO_PROMPT=1      不询问是否安装 agent skill
 
 param(
     [string]$Version = "latest",
@@ -17,6 +18,12 @@ param(
 $ErrorActionPreference = "Stop"
 $Repo = "hongmengchen/kube-token"
 $Exe  = "kube-token.exe"
+
+# 控制台按 UTF-8 输出：否则 [Console]::Write 会把中文和 █░⠋ 写成 ???
+try {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    $OutputEncoding = [System.Text.Encoding]::UTF8
+} catch { }
 
 $Arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "amd64" }
 if ($Arch -eq "arm64") {
@@ -126,7 +133,8 @@ function Save-Download-Animated {
         [Console]::ForegroundColor = [ConsoleColor]::Green
         [Console]::Write("✓")
         [Console]::ResetColor()
-        [Console]::WriteLine(" 已下载 $(Format-Size $size)  $Tag                ")
+        # 行尾补空格盖掉上一帧进度条残留（不一定有 VT 支持，不能只靠 ESC[K）
+        [Console]::WriteLine(" 已下载 $(Format-Size $size)  $Tag" + (" " * 40))
     } finally {
         $client.Dispose()
     }
@@ -177,11 +185,21 @@ if ($Animate) {
     [Console]::ForegroundColor = [ConsoleColor]::Green
     [Console]::Write("  ✓")
     [Console]::ResetColor()
-    [Console]::WriteLine(" 已安装: $Target")
+    [Console]::WriteLine(" 已安装: $Target" + (" " * 20))
 } else {
     Write-Host "已安装: $Target" -ForegroundColor Green
 }
 & $Target --version
+
+# ---- agent skill（可选，只在真终端里问） ----
+if ($Animate -and -not $env:NO_PROMPT) {
+    $answer = Read-Host "`n把 agent skill 装到 $HOME\.claude\skills（让 agent 会用本工具）？[Y/n]"
+    if ($answer -match '^\s*[nN]') {
+        Write-Host "已跳过。以后随时可以运行: kube-token skill" -ForegroundColor DarkGray
+    } else {
+        & $Target skill
+    }
+}
 
 if (Get-Command kube-token -ErrorAction SilentlyContinue) {
     Write-Host "当前终端已可用，直接运行: kube-token" -ForegroundColor Green

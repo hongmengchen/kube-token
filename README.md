@@ -27,6 +27,7 @@ kube-token  选择要更新的 user
 - **优先官方 kubectl**：有 `kubectl` 就用它写；没有时会问你要不要**一键安装官方 kubectl**（从 `dl.k8s.io` 下载并校验 sha256），不想装再用内置方式直接改 YAML——注释、键顺序、其它字段都会保留
 - **单二进制**：Go 编译，macOS / Linux / Windows 都能直接跑，不需要 Python、Node、kubectl 之类外部命令
 - **非交互模式**：`-set-token` 给脚本用，一条命令搞定
+- **自带 agent skill**：`kube-token skill` 把用法说明装进 `~/.claude/skills`（安装时也会问一次），内容和程序版本一致，升级时自动刷新
 
 ## 安装
 
@@ -206,6 +207,18 @@ kube-token upgrade --force  # 版本相同也重新安装
 ## 给 agent 用
 
 仓库里带了一个 Claude Code / 兼容 agent skill：[`.claude/skills/kube-token/SKILL.md`](.claude/skills/kube-token/SKILL.md)。它写清了 agent 该走的非交互路径（`list` → 取 token → `-set-token` → 读退出码）、回滚方式，以及「不回显 token、不提交 kubeconfig、不猜 user」这几条硬约束。CLI 相关的用法和人读的是同一套，TUI 只留给人。
+
+skill 内嵌在二进制里，可以直接装到全局目录，让**所有**项目里的 agent 都能读到：
+
+```bash
+kube-token skill           # 写到 ~/.claude/skills/kube-token/SKILL.md（旧版本会覆盖）
+kube-token skill -print    # 只把内容打到 stdout，不写文件
+kube-token skill -dir /path/to/skills   # 换个根目录
+```
+
+- 内容永远和当前程序版本配套（`go:embed`），不需要单独维护或联网拉
+- 运行 `kube-token upgrade` 后，如果之前装过 skill，会自动用新版本刷新一次
+- 安装脚本装完会问一句「要不要装 skill」，答 `n` 跳过；`NO_PROMPT=1` 可以完全不问
 
 ## 开发
 
