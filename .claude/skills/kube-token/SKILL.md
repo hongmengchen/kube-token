@@ -44,8 +44,19 @@ kube-token list
 token 的来源由用户决定，kube-token 只负责写。三种常见情况：
 
 - **用户直接给**（贴过来、放在环境变量里）：直接进第 3 步，注意别回显。
-- **从 Vault 取**：本机配置文件里有地址、认证方式、密钥路径等，agent 可以读它来拼请求，
-  但**不要打印文件内容**（含内部地址）。配置文件位置：
+- **从 Vault 取**：首选 `kube-token refresh`，它会用本机保存的 Vault 登录免密换新 token
+  并写入、验证，不需要密码、也不需要 TTY：
+
+  ```bash
+  kube-token refresh           # 过期或 10 分钟内到期才换；否则只打印剩余时间
+  kube-token refresh --force   # 强制换
+  ```
+
+  如果报 `还没有可用的 Vault 登录`，说明用户还没在本机登录过 Vault——请用户自己打开
+  `kube-token` 按 `v` 输一次密码（之后免密），**不要向用户索要 Vault 密码，也不要自己模拟登录**。
+  登录凭据存在本机 `session.json`（`0600`，别打印、别提交）；`kube-token logout` 可以清除。
+  本机配置文件里是地址、认证方式、密钥路径等，agent 可以读来拼请求，但**不要打印文件内容**
+  （含内部地址）。配置文件位置：
 
   | 系统 | 路径 |
   | --- | --- |
@@ -67,7 +78,8 @@ token 的来源由用户决定，kube-token 只负责写。三种常见情况：
   ```
 
   取 `data.service_account_token`（也兼容 `data.token`、`data.client_token`、KV v2 的
-  `data.data.*`）。密码和 client token 只在这一次请求里用，不要落盘。有 `vault` CLI 时用它更省事。
+  `data.data.*`）。密码不要落盘；client token 交给 kube-token 自己缓存（`session.json`，`0600`），
+  不要手动转存或打印。有 `vault` CLI 时用它更省事。
 - **别的密钥源**（云厂商 STS、身份提供商）：自己取到 token 后同样进第 3 步。
 
 ## 3. 写入并验证
@@ -168,4 +180,7 @@ kube-token version
 | `验证失败: ... 401` | token 无效或集群不认；文件已改，按 stderr 的回滚命令恢复 |
 | `Forbidden` | 正常，认证已通过，只是这个身份没权限读 `/version` 之外的资源 |
 | `kubectl get ...` 看到 `REDACTED` | kubectl 展示时脱敏，文件里是真 token；要探测集群用 `get --raw /version` |
+| `还没有可用的 Vault 登录` | 用户本机没登录过（或登录过期/被清）；让用户自己开 TUI 按 `v` 输一次密码，不要索取密码 |
+| 想让它自动换 token | `kube-token` 里按 `a` 开关，写进配置 `auto_update`；或定时跑 `kube-token refresh` |
+| Vault 登录失效 | `kube-token logout` 后让用户重新按 `v` 登录一次；`VAULT_TOKEN` 环境变量优先于本机缓存 |
 | 机器上同时有多个 kubeconfig | 扫描顺序是 `$KUBECONFIG`、`~/.kube/config`、`~/.kube/*.{yaml,yml,conf}`；用 `-file` 精确指定 |

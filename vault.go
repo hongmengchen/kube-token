@@ -26,6 +26,8 @@ type vaultConfig struct {
 	Secret    vaultSecret `yaml:"secret"`
 	Target    vaultTarget `yaml:"target,omitempty"`
 	TLS       vaultTLS    `yaml:"tls,omitempty"`
+	// AutoUpdate 打开后，token 快过期时自动从 Vault 换新（TUI 里按 a 切换）
+	AutoUpdate bool `yaml:"auto_update,omitempty"`
 }
 
 type vaultAuth struct {
@@ -49,8 +51,11 @@ type vaultTLS struct {
 	Insecure bool   `yaml:"insecure,omitempty"`
 }
 
+// userConfigDir 留成变量，测试里可以指向临时目录
+var userConfigDir = os.UserConfigDir
+
 func vaultConfigPath() (string, error) {
-	dir, err := os.UserConfigDir()
+	dir, err := userConfigDir()
 	if err != nil {
 		return "", err
 	}
@@ -209,46 +214,52 @@ func (c *vaultConfig) request(method, path, token string, body any) (map[string]
 	return out, nil
 }
 
-// vaultLogin 用 LDAP/username-password 换 Vault client token；method=token 时直接把密码当 token
-func vaultLogin(cfg *vaultConfig, password string) (string, error) {
+// vaultLoginSession 用 LDAP/username-password 换 Vault client token；
+// method=token 时直接把密码当 token
+func vaultLoginSession(cfg *vaultConfig, password string) (vaultSession, error) {
 	if cfg.Auth.Method == "token" {
 		if strings.TrimSpace(password) == "" {
-			return "", errors.New("Vault token 为空")
+			return vaultSession{}, errors.New("Vault token 为空")
 		}
-		return strings.TrimSpace(password), nil
+		return vaultSession{Token: strings.TrimSpace(password)}, nil
 	}
 
 	path := fmt.Sprintf("auth/%s/login/%s", cfg.Auth.Path, url.PathEscape(cfg.Auth.Username))
 	out, err := cfg.request(http.MethodPost, path, "", map[string]string{"password": password})
 	if err != nil {
-		return "", err
+		return vaultSession{}, err
 	}
 	auth, _ := out["auth"].(map[string]any)
-	token, _ := auth["client_token"].(string)
-	if token == "" {
-		return "", errors.New("登录成功但没拿到 client_token")
+	s := sessionFromAuth(auth)
+	if s.Token == "" {
+		return vaultSession{}, errors.New("登录成功但没拿到 client_token")
 	}
-	return token, nil
+	return s, nil
 }
 
-// vaultFetchToken 读 creds 接口，取服务账号 token
+// vaultFetchTokenWithSession 用已有的 client token 读 creds 接口，取服务账号 token
+func vaultFetchTokenWithSession(cfg *vaultConfig, s vaultSession) (string, error) {
+	out, err := cfg.request(http.MethodPost, cfg.Secret.Path, s.Token, cfg.Secret.Params)
+	if err != nil {
+		return "", err
+	}
+	return tokenFromVaultResponse(out)
+}
+
+// vaultFetchToken 用密码登录，成功后把 Vault 登录存到本机，之后就能免密换 token。
+// method=token 时用户给的本身就是 token，不落盘，免密请用 VAULT_TOKEN 环境变量。
 func vaultFetchToken(cfg *vaultConfig, password string) (string, error) {
 	if err := cfg.validate(); err != nil {
 		return "", err
 	}
-	clientToken, err := vaultLogin(cfg, password)
+	s, err := vaultLoginSession(cfg, password)
 	if err != nil {
 		return "", err
 	}
-	out, err := cfg.request(http.MethodPost, cfg.Secret.Path, clientToken, cfg.Secret.Params)
-	if err != nil {
-		return "", err
+	if cfg.Auth.Method != "token" {
+		_, _ = saveVaultSession(cfg, s)
 	}
-	token, err := tokenFromVaultResponse(out)
-	if err != nil {
-		return "", err
-	}
-	return token, nil
+	return vaultFetchTokenWithSession(cfg, s)
 }
 
 func tokenFromVaultResponse(out map[string]any) (string, error) {

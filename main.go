@@ -1,16 +1,18 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-var version = "0.7.0"
+var version = "0.8.0"
 
 func usage() {
 	fmt.Fprintf(os.Stderr, `kube-token %s — 粘贴新 token 直接替换 kubeconfig 里的旧值
@@ -18,6 +20,8 @@ func usage() {
 用法:
   kube-token                        打开 TUI
   kube-token list                   列出扫描到的 user（同 -list）
+  kube-token refresh [--force]      免密从 Vault 换 token（到期前；可放 cron/launchd）
+  kube-token logout                 忘掉本机保存的 Vault 登录
   kube-token skill                  把 agent skill 装到 ~/.claude/skills（旧版本会覆盖）
   kube-token upgrade [--check]      更新到最新版本
   kube-token version                打印版本
@@ -46,6 +50,10 @@ func main() {
 			entries, errs := scanEntries()
 			printList(entries, errs)
 			return
+		case "refresh":
+			os.Exit(runRefresh(os.Args[2:]))
+		case "logout":
+			os.Exit(runLogout())
 		case "skill":
 			os.Exit(runSkill(os.Args[2:]))
 		case "help":
@@ -190,6 +198,118 @@ func pickEntry(entries []Entry, user, file string) (Entry, error) {
 		fmt.Fprintf(&b, "  %s  %s\n", shortenHome(e.File), e.User)
 	}
 	return Entry{}, fmt.Errorf("%s", strings.TrimRight(b.String(), "\n"))
+}
+
+// autoTargetEntry 自动更新挑哪个 user：配置里的 target 优先，否则当前 context，再否则第一个。
+// 没配置 target 时不会去更新一堆 user，只碰看起来正在用的那个。
+func autoTargetEntry(entries []Entry, cfg *vaultConfig) (Entry, bool) {
+	if len(entries) == 0 || cfg == nil {
+		return Entry{}, false
+	}
+	if cfg.Target.User != "" || cfg.Target.File != "" {
+		e, err := pickEntry(entries, cfg.Target.User, cfg.Target.File)
+		if err != nil {
+			return Entry{}, false
+		}
+		return e, true
+	}
+	for _, e := range entries {
+		if e.IsCurrent {
+			return e, true
+		}
+	}
+	return entries[0], true
+}
+
+// autoRefreshWindow 提前换新的余量：快过期就换，不等真的过期
+const autoRefreshWindow = 10 * time.Minute
+
+// autoDue 判断这个条目该不该自动换 token。
+// exec 插件自己会续期；不是 JWT 的判断不了到期时间，都不动。
+func autoDue(e Entry, now time.Time) bool {
+	switch {
+	case e.HasExec:
+		return false
+	case !e.HasToken():
+		return true
+	case !e.HasExp:
+		return false
+	default:
+		return !e.Expiry.After(now.Add(autoRefreshWindow))
+	}
+}
+
+// runRefresh 是给 cron / launchd 用的免密入口：用本机保存的 Vault 登录换 token
+func runRefresh(args []string) int {
+	fs := flag.NewFlagSet("refresh", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	var force bool
+	fs.BoolVar(&force, "force", false, "还没到期也换新")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	cfg, err := loadVaultConfig()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "错误: "+err.Error())
+		return 1
+	}
+	if cfg == nil {
+		fmt.Fprintln(os.Stderr, "还没有 Vault 配置：先运行 kube-token 打开 TUI，按 c 填写")
+		return 1
+	}
+
+	entries, _ := scanEntries()
+	e, ok := autoTargetEntry(entries, cfg)
+	if !ok {
+		fmt.Fprintln(os.Stderr, "没有扫描到可以更新的 user")
+		return 1
+	}
+	if !force && !autoDue(e, time.Now()) {
+		label, _, _ := expiryLabel(e)
+		fmt.Printf("%s / %s 还不用更新（%s）\n", shortenHome(e.File), e.User, label)
+		return 0
+	}
+
+	tok, err := vaultFetchTokenAuto(cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "错误: "+err.Error())
+		if errors.Is(err, errNoVaultSession) {
+			fmt.Fprintln(os.Stderr, "提示: 先在 TUI 里按 v 输入一次 Vault 密码，之后免密；或设置 VAULT_TOKEN")
+		}
+		return 1
+	}
+
+	kubectlPath, _ := findKubectl()
+	backup, err := applyTokenWith(e, tok, kubectlPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "错误: "+err.Error())
+		return 1
+	}
+	fmt.Printf("已更新 %s / %s\n备份: %s\n", shortenHome(e.File), e.User, shortenHome(backup))
+
+	verify, verr := verifyClusterWith(e.File, kubectlPath)
+	if verr != nil {
+		fmt.Fprintf(os.Stderr, "验证失败: %v\n如需回滚: cp %s %s\n", verr, backup, e.File)
+		return 2
+	}
+	fmt.Println("验证: " + verify)
+	return 0
+}
+
+func runLogout() int {
+	path, err := vaultSessionPath()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "错误: "+err.Error())
+		return 1
+	}
+	if err := clearVaultSession(); err != nil {
+		fmt.Fprintln(os.Stderr, "错误: "+err.Error())
+		return 1
+	}
+	fmt.Printf("已忘掉本机保存的 Vault 登录（%s）\n", shortenHome(path))
+	fmt.Println("VAULT_TOKEN 环境变量如果还在，仍然会用它")
+	return 0
 }
 
 func printList(entries []Entry, scanErrs []error) {

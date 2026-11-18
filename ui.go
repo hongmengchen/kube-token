@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -80,6 +81,11 @@ type model struct {
 	checkErr  string
 	updatedTo string
 
+	// 自动更新：本机保存的 Vault 登录 + 到期前自动换 token
+	session   *vaultSession
+	autoBusy  bool
+	autoApply bool
+
 	spin spinner.Model
 }
 
@@ -94,6 +100,15 @@ type vaultDoneMsg struct {
 	token string
 	err   error
 }
+
+// autoRefreshDoneMsg 是免密换 token 的结果；token 拿到后直接写入，不经过确认页
+type autoRefreshDoneMsg struct {
+	entry Entry
+	token string
+	err   error
+}
+
+type autoTickMsg struct{}
 
 type kubectlInstalledMsg struct {
 	path string
@@ -155,11 +170,36 @@ func newModel(entries []Entry, scanErrs []error) model {
 		m.note = "读取 Vault 配置失败: " + err.Error()
 	} else {
 		m.cfg = cfg
+		m.session = loadVaultSession(cfg)
 	}
 	return m
 }
 
-func (m model) Init() tea.Cmd { return checkVersionCmd() }
+func (m model) Init() tea.Cmd {
+	return tea.Batch(checkVersionCmd(), tea.Tick(2*time.Second, func(time.Time) tea.Msg {
+		return autoTickMsg{}
+	}))
+}
+
+// autoTickCmd 每分钟看一眼：开着自动更新、token 快过期就免密换一个
+func autoTickCmd() tea.Cmd {
+	return tea.Tick(time.Minute, func(time.Time) tea.Msg { return autoTickMsg{} })
+}
+
+// vaultFetchCachedCmd 用 VAULT_TOKEN 或本机保存的登录拿 token，不经过密码
+func vaultFetchCachedCmd(cfg *vaultConfig) tea.Cmd {
+	return func() tea.Msg {
+		tok, err := vaultFetchTokenAuto(cfg)
+		return vaultDoneMsg{token: tok, err: err}
+	}
+}
+
+func autoRefreshCmd(cfg *vaultConfig, e Entry) tea.Cmd {
+	return func() tea.Msg {
+		tok, err := vaultFetchTokenAuto(cfg)
+		return autoRefreshDoneMsg{entry: e, token: tok, err: err}
+	}
+}
 
 func checkVersionCmd() tea.Cmd {
 	return func() tea.Msg {
@@ -228,6 +268,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case autoTickMsg:
+		next := autoTickCmd()
+		if m.state != viewList || m.autoBusy || m.cfg == nil || !m.cfg.AutoUpdate {
+			return m, next
+		}
+		if e, ok := autoTargetEntry(m.entries, m.cfg); ok && autoDue(e, time.Now()) {
+			updated, cmd := m.startAutoRefresh(e)
+			return updated, tea.Batch(next, cmd)
+		}
+		return m, next
+
+	case autoRefreshDoneMsg:
+		m.autoBusy = false
+		m.session = loadVaultSession(m.cfg)
+		if msg.err != nil {
+			m.state = viewList
+			m.note = autoErrorNote(msg.err)
+			return m, nil
+		}
+		m.selected = msg.entry
+		m.autoApply = true
+		m.autoBusy = true
+		m.state = viewWorking
+		m.workText = "正在写入并验证 " + msg.entry.User + " 的 token…"
+		kp, ok := findKubectl()
+		if !ok {
+			kp = ""
+		}
+		return m, tea.Batch(m.spin.Tick, applyCmd(msg.entry, msg.token, kp))
+
 	case kubectlVersionMsg:
 		if msg.gen != m.kcGen {
 			return m, nil
@@ -285,6 +355,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.spin.Tick, applyCmd(m.selected, tok, msg.path))
 
 	case vaultDoneMsg:
+		// 密码登录成功后 session.json 已经写好，这里同步一下界面状态
+		m.session = loadVaultSession(m.cfg)
 		if msg.err != nil {
 			m.state = viewMessage
 			m.message = msg.err.Error()
@@ -298,6 +370,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case applyDoneMsg:
+		// 自动更新是后台行为：写完直接回列表，用一行提示说明结果，不弹结果页
+		if m.autoApply {
+			m.autoApply = false
+			m.autoBusy = false
+			m.state = viewList
+			user := m.selected.User
+			m.entries, m.scanErrs = scanEntries()
+			m.clampCursor()
+			switch {
+			case msg.err == nil:
+				m.note = "已自动更新 " + user + " 的 token"
+				if msg.verify != "" {
+					m.note += "（" + msg.verify + "）"
+				}
+			case msg.applied:
+				m.note = "token 已自动写入，但验证失败：" + msg.err.Error()
+			default:
+				m.note = "自动更新失败：" + msg.err.Error()
+			}
+			return m, nil
+		}
 		m.state = viewResult
 		m.backup = msg.backup
 		m.wrote = msg.applied
@@ -359,6 +452,8 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.clampCursor()
 		case "v":
 			return m.startVaultFlow()
+		case "a":
+			return m.toggleAuto()
 		case "c":
 			m.openConfigForm()
 			m.state = viewConfig
@@ -550,10 +645,80 @@ func (m *model) startVaultFlow() (tea.Model, tea.Cmd) {
 	m.selected = entry
 	m.source = "Vault"
 	m.pass.SetValue("")
-	m.pass.Focus()
 	m.note = ""
+
+	// 已经登录过 Vault（或设了 VAULT_TOKEN）：直接拿 token，不再问密码
+	if os.Getenv("VAULT_TOKEN") != "" || m.session != nil {
+		m.state = viewWorking
+		m.workText = "正在用本机保存的 Vault 登录获取 token…"
+		return m, tea.Batch(m.spin.Tick, vaultFetchCachedCmd(m.cfg))
+	}
+
+	m.pass.Focus()
 	m.state = viewPass
 	return m, textinput.Blink
+}
+
+// startAutoRefresh 是后台自动更新：拿 token、写入、验证，全程不打断列表
+func (m model) startAutoRefresh(e Entry) (tea.Model, tea.Cmd) {
+	m.autoBusy = true
+	m.state = viewWorking
+	m.workText = "正在从 Vault 自动更新 " + e.User + " 的 token…"
+	return m, tea.Batch(m.spin.Tick, autoRefreshCmd(m.cfg, e))
+}
+
+func autoErrorNote(err error) string {
+	if errors.Is(err, errNoVaultSession) {
+		return "自动更新待命：按 v 输入一次 Vault 密码，之后就不用再输"
+	}
+	return "自动更新失败：" + err.Error()
+}
+
+// toggleAuto 切换自动更新开关；打开时如果 token 已经该换了，立刻换一次
+func (m model) toggleAuto() (tea.Model, tea.Cmd) {
+	if m.cfg == nil {
+		m.note = "先按 c 配置 Vault，再打开自动更新"
+		return m, nil
+	}
+	m.cfg.AutoUpdate = !m.cfg.AutoUpdate
+	if _, err := saveVaultConfig(m.cfg); err != nil {
+		m.note = "开关没保存：" + err.Error()
+		return m, nil
+	}
+	if !m.cfg.AutoUpdate {
+		m.note = "自动更新已关闭"
+		return m, nil
+	}
+	if m.session == nil && os.Getenv("VAULT_TOKEN") == "" {
+		m.note = "自动更新已打开；先按 v 输入一次 Vault 密码，之后就不用再输"
+		return m, nil
+	}
+	if e, ok := autoTargetEntry(m.entries, m.cfg); ok && autoDue(e, time.Now()) {
+		return m.startAutoRefresh(e)
+	}
+	m.note = "自动更新已打开：token 到期前 10 分钟会自动换新"
+	return m, nil
+}
+
+// sessionText 说明本机保存的 Vault 登录还能不能用
+func (m model) sessionText() string {
+	if m.cfg == nil {
+		return "Vault 未配置"
+	}
+	if os.Getenv("VAULT_TOKEN") != "" {
+		return "Vault 登录来自 VAULT_TOKEN"
+	}
+	s := m.session
+	if s == nil {
+		return "按 v 登录一次 Vault，之后免密"
+	}
+	if s.ExpiresAt.IsZero() {
+		return "Vault 免密登录有效"
+	}
+	if d := time.Until(s.ExpiresAt); d > 0 {
+		return "Vault 免密登录，剩 " + shortDur(d)
+	}
+	return "Vault 登录已过期，按 v 重输密码"
 }
 
 var configLabels = []string{
@@ -623,9 +788,11 @@ func (m *model) saveConfigFromForm() {
 		},
 		Target: vaultTarget{File: expandHome(get(6)), User: get(7)},
 	}
-	if m.cfg != nil {
-		cfg.Namespace = m.cfg.Namespace
-		cfg.TLS = m.cfg.TLS
+	old := m.cfg
+	if old != nil {
+		cfg.Namespace = old.Namespace
+		cfg.TLS = old.TLS
+		cfg.AutoUpdate = old.AutoUpdate
 	}
 	normalizeVaultConfig(cfg)
 
@@ -638,7 +805,13 @@ func (m *model) saveConfigFromForm() {
 		m.note = "保存失败: " + err.Error()
 		return
 	}
+	// 地址或登录身份变了，旧的 Vault 登录不再适用
+	if old == nil || old.Addr != cfg.Addr || old.Auth.Method != cfg.Auth.Method ||
+		old.Auth.Path != cfg.Auth.Path || old.Auth.Username != cfg.Auth.Username {
+		_ = clearVaultSession()
+	}
 	m.cfg = cfg
+	m.session = loadVaultSession(cfg)
 	m.state = viewList
 	m.note = "已保存到 " + shortenHome(path) + "，按 v 获取 token"
 }
@@ -811,9 +984,16 @@ func (m model) viewList() string {
 	if len(m.entries) > 0 {
 		stats = styles.Dim.Render(fmt.Sprintf("%d 个 user · %d 个文件", len(m.entries), countFiles(m.entries)))
 	}
+	autoOn := styles.Dim.Render("[关]")
+	if m.cfg != nil && m.cfg.AutoUpdate {
+		autoOn = styles.Good.Render("[开]")
+	}
+	autoLine := styles.Key.Render("a") + styles.Dim.Render(" 自动更新 ") + autoOn +
+		styles.Dim.Render("    "+m.sessionText())
 	b.WriteString(m.withLogo(
 		styles.Title.Render("kube-token")+styles.Dim.Render("  v"+version+"  选择要更新的 user"),
 		stats+m.updateStatus(),
+		autoLine,
 	))
 	b.WriteString("\n")
 
@@ -831,7 +1011,7 @@ func (m model) viewList() string {
 	}
 
 	b.WriteString("\n")
-	hints := []string{"↑↓", "选择", "enter", "手动粘贴", "v", "从 Vault 获取", "c", "配置"}
+	hints := []string{"↑↓", "选择", "enter", "手动粘贴", "v", "从 Vault 获取", "a", "自动更新", "c", "配置"}
 	if m.canUpdate() {
 		hints = append(hints, "U", "升级")
 	}
@@ -993,7 +1173,7 @@ func (m model) viewPass() string {
 	if m.note != "" {
 		b.WriteString("  " + styles.Warn.Render(m.note) + "\n\n")
 	} else {
-		b.WriteString("  " + styles.Dim.Render("密码只用于这次登录，不会保存") + "\n\n")
+		b.WriteString("  " + styles.Dim.Render("密码只用于这次登录，不会保存；换到的 Vault 登录存本机（0600），之后免密") + "\n\n")
 	}
 	b.WriteString(styles.Hints("enter", "登录并获取", "esc", "返回"))
 	return b.String()

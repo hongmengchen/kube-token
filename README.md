@@ -12,16 +12,16 @@
 给 EKS / K8s 这类需要手动更新 `users[].user.token` 的场景用。启动、选 user、粘 token、回车，剩下的备份和验证都由它做。
 
 ```
-╱───╲  kube-token  v0.7.0  选择要更新的 user
+╱───╲  kube-token  v0.8.0  选择要更新的 user
 │ K │  2 个 user · 2 个文件 · 已是最新
-╲───╱
+╲───╱  a 自动更新 [开]    Vault 免密登录，剩 6d
 │ ~/.kube/config                                                    当前 context
 │ user     arn:aws:eks:us-east-1:123456789012:cluster/example
 │ token    eyJhbGci…-llw  ·  剩 14m02s
 │ ~/.kube/prod.yaml
 │ user     dev-sa
 │ token    eyJhbGci…9pg  ·  已过期 3h
-  ↑↓ 选择  ·  enter 手动粘贴  ·  v 从 Vault 获取  ·  c 配置  ·  q 退出
+  ↑↓ 选择  ·  enter 手动粘贴  ·  v 从 Vault 获取  ·  a 自动更新  ·  c 配置  ·  q 退出
 ```
 
 ## 特性
@@ -30,6 +30,7 @@
 - **JWT 过期倒计时**：解析 token 里的 `exp`，直接显示「剩 14m02s」或「已过期 3h」
 - **剪贴板直读**：`ctrl+y` 从系统剪贴板取 token，不用手动粘贴
 - **Vault 直接取 token**：`v` 输入一次密码，自动登录 Vault、调 creds 接口拿服务账号 token 并写入 kubeconfig；地址、挂载点、角色都只存在本机配置里，不随仓库分发
+- **免密自动更新**：登录一次后把 Vault 登录（client token，不是密码）存在本机，之后 `v` 和自动更新都不再问密码；按 `a` 打开开关，token 到期前 10 分钟自动换新并验证。也可以交给 cron / launchd 跑 `kube-token refresh`
 - **自动备份**：写入前存成 `config.bak.<时间戳>`，权限 `0600`
 - **写入后校验**：从文件回读确认 token 真的变了，再请求集群 `/version` 验证认证是否生效
 - **优先官方 kubectl**：有 `kubectl` 就用它写；没有时会问你要不要**一键安装官方 kubectl**（从 `dl.k8s.io` 下载并校验 sha256），不想装再用内置方式直接改 YAML——注释、键顺序、其它字段都会保留
@@ -78,7 +79,8 @@ kube-token
 | --- | --- |
 | `↑` `↓` / `j` `k` | 选择 user |
 | `enter` | 进入输入页 / 下一步 / 应用 |
-| `v` | 从 Vault 登录取 token（需先按 `c` 配好） |
+| `v` | 从 Vault 登录取 token（需先按 `c` 配好；登录过一次后免密） |
+| `a` | 开关自动更新：token 到期前从 Vault 自动换新 |
 | `c` | 编辑 Vault 配置（只存本机） |
 | `ctrl+y` | 从剪贴板读取 token |
 | `r` | 重新扫描 kubeconfig |
@@ -112,9 +114,16 @@ kube-token -list
 
 # 缺 kubectl 时先装官方 kubectl 再写入（脚本里的“一键安装”）
 kube-token -set-token "$NEW_TOKEN" -install-kubectl
+
+# 免密从 Vault 换 token（到期前才换；可放 cron / launchd）
+kube-token refresh
+kube-token refresh --force   # 还没到期也换
+
+# 忘掉本机保存的 Vault 登录
+kube-token logout
 ```
 
-`-set-token` 的退出码：`0` 成功，`1` 写入失败，`2` 已写入但验证失败（会打印回滚命令）。
+`-set-token` 的退出码：`0` 成功，`1` 写入失败，`2` 已写入但验证失败（会打印回滚命令）。`refresh` 同理，还没到期时打印剩余时间并以 `0` 退出，适合定时任务。
 
 ## 从 Vault 获取 token
 
@@ -122,8 +131,8 @@ kube-token -set-token "$NEW_TOKEN" -install-kubectl
 
 ```bash
 kube-token
-# 第一次：按 c 填写配置，ctrl+s 保存
-# 之后每次：按 v → 输入密码 → enter → 确认替换
+# 第一次：按 c 填写配置，ctrl+s 保存；按 v 输入一次 Vault 密码
+# 之后：按 v 直接拿 token（免密），或按 a 打开自动更新
 ```
 
 程序直接走 Vault 的 HTTP API，**不需要安装 vault CLI**，也不需要预先 `vault login` 或设置 `VAULT_ADDR`。
@@ -163,10 +172,11 @@ secret:
         kubernetes_namespace: <namespace>
 ```
 
-还有几个不在表单里的可选项，需要时手动编辑这个文件：
+还有几个不在表单里的可选项，需要时手动编辑这个文件（`auto_update` 也可以在 TUI 里按 `a` 切换）：
 
 ```yaml
 namespace: <vault-namespace>   # 多租户 Vault 才需要，会变成 X-Vault-Namespace
+auto_update: true              # token 到期前自动换新（等同 TUI 里按 a）
 tls:
     ca_cert: /path/to/ca.pem   # 公司自签证书
     insecure: true             # 跳过证书校验，仅用于内网测试
@@ -177,9 +187,35 @@ tls:
 1. 用你的密码调用 `auth/<path>/login/<username>` 换 Vault client token
 2. 用这个 client token 调 `POST /v1/<密钥路径>`，取 `data.service_account_token`（也兼容 `token` / KV v2 的 `data.data.token`）
 3. 拿到 token 后进确认页，来源显示 `Vault`；enter 才会真正写进 kubeconfig
-4. 密码只在这次登录用，不落盘；Vault client token 也只在内存里用一次，不写任何文件
+4. 密码只在登录那一次用，不落盘；换到的 Vault client token（不是密码）存到本机 `session.json`（`0600`），之后 `v` 和自动更新都直接用它，快到期时先 `renew-self` 续期
 
 登录失败会停在提示页显示 Vault 返回的错误（比如 `invalid username or password`），密码输错不会有副作用。token 已经取到但文件写入失败时，回退到列表重来即可。
+
+### 自动更新（免密）
+
+登录一次后，Vault 的 client token 会存在本机：
+
+| 系统 | 位置 |
+| --- | --- |
+| macOS | `~/Library/Application Support/kube-token/session.json` |
+| Linux | `~/.config/kube-token/session.json` |
+| Windows | `%AppData%\kube-token\session.json` |
+
+这个文件只包含 Vault 地址、认证方式、用户名和 client token，权限 `0600`；**密码从不落盘**。client token 快到期时，程序会先调 `auth/token/renew-self` 续期，所以正常情况下只需要输一次密码；只有 Vault 那边允许的最长有效期到了、或 token 被回收，才需要重新登录。
+
+- 列表里按 `a` 打开/关闭自动更新，写进 `config.yaml` 的 `auto_update`，下次打开保持
+- 打开后：TUI 启动时和开着时每分钟检查一次；目标 user 的 token 过期或 10 分钟内到期，就免密换新、写入、验证，不弹确认页，完成后在列表下面留一行结果
+- 目标 user 取配置里的「目标 user / 目标文件」，留空就用当前 context；`exec` 插件自己会续期、不是 JWT 的 token 判断不了到期时间，这两种都不动
+- 还没登录过时不会替你输密码：列表提示「按 v 登录一次 Vault」，登录后自动更新就接管
+- TUI 关着也能更新，用 `kube-token refresh` 放定时任务：
+
+```bash
+# 每 10 分钟看一眼，快过期才换；还没到期时直接退出，不写文件
+*/10 * * * * /path/to/kube-token refresh >> ~/.local/state/kube-token-refresh.log 2>&1
+```
+
+- 也认 `VAULT_TOKEN` 环境变量：设置了就优先用它，不会写 `session.json`
+- `kube-token logout` 随时清掉本机保存的 Vault 登录；之后 `v` 会重新问密码
 
 ## 更新
 
@@ -215,6 +251,7 @@ TUI 标题栏始终显示当前版本（如 `kube-token v0.6.1`），启动时�
 - 备份文件权限 `0600`
 - 发布二进制带 `checksums.txt`，安装脚本、`kube-token upgrade` 和 hmck 都会校验 SHA-256
 - Vault 的公司内部地址、挂载点、角色、用户只写在本地配置里（`0600`），不进入程序、不进入仓库；仓库 `.gitignore` 也屏蔽了 `config.yaml`
+- 登录过的 Vault client token 存在本机 `session.json`（`0600`，和 kubeconfig 里的 token 同等敏感）；不想要就 `kube-token logout`，或在自动更新里关掉不代表清除登录
 
 如果某个 user 用的是 `exec` 插件（例如 `aws eks get-token`），TUI 会在详情里标注「exec 自动续期」——这种 user 写死 token 可能和插件冲突，一般不需要用它。
 

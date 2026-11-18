@@ -68,6 +68,7 @@ func testVaultConfig(addr string) *vaultConfig {
 }
 
 func TestVaultFetchToken(t *testing.T) {
+	isolateVaultConfig(t)
 	srv := fakeVault(t, "secret", "")
 	defer srv.Close()
 
@@ -81,6 +82,7 @@ func TestVaultFetchToken(t *testing.T) {
 }
 
 func TestVaultLoginRejected(t *testing.T) {
+	isolateVaultConfig(t)
 	srv := fakeVault(t, "right-password", "")
 	defer srv.Close()
 
@@ -94,6 +96,7 @@ func TestVaultLoginRejected(t *testing.T) {
 }
 
 func TestVaultNamespaceHeader(t *testing.T) {
+	isolateVaultConfig(t)
 	srv := fakeVault(t, "secret", "team-a")
 	defer srv.Close()
 
@@ -106,6 +109,7 @@ func TestVaultNamespaceHeader(t *testing.T) {
 }
 
 func TestVaultTokenMethod(t *testing.T) {
+	isolateVaultConfig(t)
 	srv := fakeVault(t, "", "")
 	defer srv.Close()
 
