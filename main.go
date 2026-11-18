@@ -11,7 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-var version = "0.3.2"
+var version = "0.4.0"
 
 func usage() {
 	fmt.Fprintf(os.Stderr, `kube-token %s — 粘贴新 token 直接替换 kubeconfig 里的旧值
@@ -28,6 +28,7 @@ func usage() {
   -user <name>          配合 -set-token：指定 user
   -file <path>          配合 -set-token：指定 kubeconfig 文件
   -no-verify            替换后不验证集群连通性
+  -install-kubectl      没有 kubectl 时先一键安装官方 kubectl
 
 `, version)
 }
@@ -57,6 +58,7 @@ func main() {
 		userFlag = flag.String("user", "", "配合 -set-token：指定 user（默认取当前 context 的 user）")
 		fileFlag = flag.String("file", "", "配合 -set-token：指定 kubeconfig 文件")
 		noVerify = flag.Bool("no-verify", false, "替换后不验证集群连通性")
+		installK = flag.Bool("install-kubectl", false, "没有 kubectl 时先安装官方 kubectl 再写入")
 		verFlag  = flag.Bool("version", false, "打印版本后退出")
 	)
 	flag.Usage = usage
@@ -87,7 +89,7 @@ func main() {
 	}
 
 	if *setToken != "" {
-		os.Exit(runSet(*setToken, *userFlag, *fileFlag, entries, *noVerify))
+		os.Exit(runSet(*setToken, *userFlag, *fileFlag, entries, *noVerify, *installK))
 	}
 
 	if *listFlag {
@@ -103,7 +105,7 @@ func main() {
 }
 
 // runSet 是给脚本/多设备场景用的非交互入口
-func runSet(token, user, file string, entries []Entry, noVerify bool) int {
+func runSet(token, user, file string, entries []Entry, noVerify, wantKubectl bool) int {
 	if strings.ContainsAny(token, " \t\r\n") {
 		fmt.Fprintln(os.Stderr, "错误: token 里含有空白字符")
 		return 1
@@ -115,7 +117,28 @@ func runSet(token, user, file string, entries []Entry, noVerify bool) int {
 		return 1
 	}
 
-	backup, err := applyToken(match, token)
+	kubectlPath, ok := findKubectl()
+	if !ok {
+		if wantKubectl {
+			fmt.Println("没有找到 kubectl，正在安装官方 kubectl…")
+			path, installErr := installKubectl("")
+			if installErr != nil {
+				fmt.Fprintf(os.Stderr, "安装 kubectl 失败: %v\n改用内置方式写入\n", installErr)
+			} else {
+				kubectlPath, ok = path, true
+				fmt.Println("kubectl 已安装: " + shortenHome(path))
+			}
+		} else {
+			fmt.Fprintln(os.Stderr, "提示: 没有找到 kubectl，改用内置方式改写 YAML（要装官方 kubectl 可加 -install-kubectl）")
+		}
+	}
+	if ok {
+		fmt.Println("写入方式: 官方 kubectl（" + shortenHome(kubectlPath) + "）")
+	} else {
+		fmt.Println("写入方式: 内置 YAML 改写")
+	}
+
+	backup, err := applyTokenWith(match, token, kubectlPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "错误: "+err.Error())
 		return 1
@@ -125,7 +148,7 @@ func runSet(token, user, file string, entries []Entry, noVerify bool) int {
 	if noVerify {
 		return 0
 	}
-	detail, err := verifyCluster(match.File)
+	detail, err := verifyClusterWith(match.File, kubectlPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "验证失败: %v\n如需回滚: cp %s %s\n", err, backup, match.File)
 		return 2

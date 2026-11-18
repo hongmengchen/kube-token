@@ -24,7 +24,7 @@ kube-token  选择要更新的 user
 - **Vault 直接取 token**：`v` 输入一次密码，自动登录 Vault、调 creds 接口拿服务账号 token 并写入 kubeconfig；地址、挂载点、角色都只存在本机配置里，不随仓库分发
 - **自动备份**：写入前存成 `config.bak.<时间戳>`，权限 `0600`
 - **写入后校验**：从文件回读确认 token 真的变了，再请求集群 `/version` 验证认证是否生效
-- **不依赖 kubectl**：有 `kubectl` 就用它写（兼容各种边角写法），没有就在 Go 里直接改 YAML——注释、键顺序、其它字段都会保留
+- **优先官方 kubectl**：有 `kubectl` 就用它写；没有时会问你要不要**一键安装官方 kubectl**（从 `dl.k8s.io` 下载并校验 sha256），不想装再用内置方式直接改 YAML——注释、键顺序、其它字段都会保留
 - **单二进制**：Go 编译，macOS / Linux / Windows 都能直接跑，不需要 Python、Node、kubectl 之类外部命令
 - **非交互模式**：`-set-token` 给脚本用，一条命令搞定
 
@@ -71,6 +71,19 @@ kube-token
 | `esc` | 返回上一页 |
 | `q` / `ctrl+c` | 退出 |
 
+没有 `kubectl` 的时候，确认页回车后会先问你：
+
+```
+kube-token  ! 没有找到 kubectl
+
+  用官方 kubectl 写入最稳妥，行为和命令行完全一致；
+  也可以不装，由本程序直接改 YAML（照样先备份，注释和其它字段保留）。
+
+  enter 一键安装官方 kubectl  ·  n 不安装，用内置方式  ·  esc 返回
+```
+
+一键安装会从 `dl.k8s.io` 下载对应平台的官方二进制，校验 sha256 后放到 kube-token 自己所在的目录（这个目录本来就在 `PATH` 里），不会动系统包管理器。
+
 非交互（适合脚本、新设备初始化）：
 
 ```bash
@@ -82,6 +95,9 @@ kube-token -set-token "$NEW_TOKEN" -user dev-sa -file ~/.kube/prod.yaml
 
 # 只看看扫到了什么
 kube-token -list
+
+# 缺 kubectl 时先装官方 kubectl 再写入（脚本里的“一键安装”）
+kube-token -set-token "$NEW_TOKEN" -install-kubectl
 ```
 
 `-set-token` 的退出码：`0` 成功，`1` 写入失败，`2` 已写入但验证失败（会打印回滚命令）。
@@ -168,10 +184,12 @@ kube-token upgrade --force  # 版本相同也重新安装
 ## 它做了什么
 
 1. 扫描 kubeconfig，解析每个 user 的 token 和 JWT 过期时间
-2. 选中的条目：备份文件 → 写入新 token（有 `kubectl` 用 `kubectl config set-credentials`，没有就直接改 YAML 节点）
+2. 选中的条目：备份文件 → 写入新 token
+   - 有 `kubectl`：`kubectl config set-credentials <user> --token=<new>`（结果更稳，和命令行行为一致）
+   - 没有 `kubectl`：先问要不要一键安装官方 kubectl；选择不装（或装失败）就由程序直接改 YAML 节点
 3. 重新解析文件，确认 token 确实写进去了（不一致就报错）
 4. 用该 user 的 token 请求集群 `/version`（有 `kubectl` 时走 `kubectl get --raw /version`）：能拿到版本号就是通了；返回 `Forbidden` 也算认证成功（只是身份权限受限）
-5. 验证失败时保留备份，并在结果页给出回滚命令
+5. 结果页会标明这次用的是「官方 kubectl」还是「内置方式」，验证失败时保留备份并给出回滚命令
 
 ## 安全说明
 

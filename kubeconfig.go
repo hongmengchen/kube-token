@@ -187,15 +187,21 @@ func scanEntries() ([]Entry, []error) {
 }
 
 // applyToken 备份后写入新 token，并从文件回读校验。
-// 有 kubectl 就用它（兼容各种边角写法），没有就原生改 YAML，Windows 上不用额外装东西。
-func applyToken(e Entry, token string) (backup string, err error) {
+// 有 kubectl 就用它（官方推荐），没有就退回内置的 YAML 改写。
+func applyToken(e Entry, token string) (string, error) {
+	kp, _ := findKubectl()
+	return applyTokenWith(e, token, kp)
+}
+
+// applyTokenWith kubectlPath 为空表示用内置方式改 YAML
+func applyTokenWith(e Entry, token, kubectlPath string) (backup string, err error) {
 	backup = fmt.Sprintf("%s.bak.%s", e.File, time.Now().Format("20060102-150405"))
 	if err := copyFile(e.File, backup); err != nil {
 		return "", fmt.Errorf("备份失败: %w", err)
 	}
 
-	if _, lookErr := exec.LookPath("kubectl"); lookErr == nil {
-		cmd := exec.Command("kubectl", "--kubeconfig", e.File, "config", "set-credentials", e.User, "--token="+token)
+	if kubectlPath != "" {
+		cmd := exec.Command(kubectlPath, "--kubeconfig", e.File, "config", "set-credentials", e.User, "--token="+token)
 		if out, cmdErr := cmd.CombinedOutput(); cmdErr != nil {
 			_ = os.Remove(backup)
 			msg := strings.TrimSpace(string(out))
@@ -352,10 +358,16 @@ func writeFileAtomic(path string, data []byte) error {
 
 // verifyCluster 用 /version 探测认证是否生效（任何已认证身份都放行）
 func verifyCluster(file string) (string, error) {
-	if _, err := exec.LookPath("kubectl"); err != nil {
+	kp, _ := findKubectl()
+	return verifyClusterWith(file, kp)
+}
+
+// verifyClusterWith kubectlPath 为空时直接请求集群 API
+func verifyClusterWith(file, kubectlPath string) (string, error) {
+	if kubectlPath == "" {
 		return verifyClusterNative(file)
 	}
-	cmd := exec.Command("kubectl", "--kubeconfig", file, "get", "--raw", "/version", "--request-timeout=15s")
+	cmd := exec.Command(kubectlPath, "--kubeconfig", file, "get", "--raw", "/version", "--request-timeout=15s")
 	out, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(out))
 	if err != nil {

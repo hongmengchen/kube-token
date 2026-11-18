@@ -23,6 +23,7 @@ const (
 	viewPass
 	viewConfig
 	viewMessage
+	viewKubectl
 )
 
 var (
@@ -74,6 +75,10 @@ type model struct {
 	message   string
 	messageOK bool
 
+	// 写入方式：kubectl / 内置
+	kubectlPath string
+	method      string
+
 	spin spinner.Model
 }
 
@@ -87,6 +92,11 @@ type applyDoneMsg struct {
 type vaultDoneMsg struct {
 	token string
 	err   error
+}
+
+type kubectlInstalledMsg struct {
+	path string
+	err  error
 }
 
 func newModel(entries []Entry, scanErrs []error) model {
@@ -130,6 +140,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		return m.handleKey(msg)
+
+	case kubectlInstalledMsg:
+		if msg.err != nil {
+			m.state = viewKubectl
+			m.note = "安装失败: " + msg.err.Error()
+			return m, nil
+		}
+		m.kubectlPath = msg.path
+		m.method = "官方 kubectl"
+		m.state = viewWorking
+		m.workText = "正在写入并验证 token…"
+		tok := strings.TrimSpace(m.input.Value())
+		return m, tea.Batch(m.spin.Tick, applyCmd(m.selected, tok, msg.path))
 
 	case vaultDoneMsg:
 		if msg.err != nil {
@@ -262,10 +285,18 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.input.Focus()
 			return m, textinput.Blink
 		case "enter":
-			m.state = viewWorking
-			m.workText = "正在写入并验证 token…"
 			tok := strings.TrimSpace(m.input.Value())
-			return m, tea.Batch(m.spin.Tick, applyCmd(m.selected, tok))
+			if kp, ok := findKubectl(); ok {
+				m.kubectlPath = kp
+				m.method = "官方 kubectl"
+				m.state = viewWorking
+				m.workText = "正在写入并验证 token…"
+				return m, tea.Batch(m.spin.Tick, applyCmd(m.selected, tok, kp))
+			}
+			// 没有 kubectl：先问要不要装官方版，再决定用哪种方式写
+			m.state = viewKubectl
+			m.note = ""
+			return m, nil
 		}
 
 	case viewPass:
@@ -314,6 +345,28 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.fields[m.focus], cmd = m.fields[m.focus].Update(k)
 			return m, cmd
+		}
+		return m, nil
+
+	case viewKubectl:
+		switch k.String() {
+		case "esc":
+			m.state = viewConfirm
+			return m, nil
+		case "enter":
+			m.state = viewWorking
+			m.workText = "正在下载并安装官方 kubectl…"
+			return m, tea.Batch(m.spin.Tick, func() tea.Msg {
+				path, err := installKubectl("")
+				return kubectlInstalledMsg{path: path, err: err}
+			})
+		case "n":
+			m.kubectlPath = ""
+			m.method = "内置（未装 kubectl）"
+			m.state = viewWorking
+			m.workText = "正在写入并验证 token…"
+			tok := strings.TrimSpace(m.input.Value())
+			return m, tea.Batch(m.spin.Tick, applyCmd(m.selected, tok, ""))
 		}
 		return m, nil
 
@@ -487,13 +540,13 @@ func parseParams(s string) map[string]string {
 	return out
 }
 
-func applyCmd(e Entry, token string) tea.Cmd {
+func applyCmd(e Entry, token, kubectlPath string) tea.Cmd {
 	return func() tea.Msg {
-		backup, err := applyToken(e, token)
+		backup, err := applyTokenWith(e, token, kubectlPath)
 		if err != nil {
 			return applyDoneMsg{backup: backup, applied: backup != "", err: err}
 		}
-		verify, verr := verifyCluster(e.File)
+		verify, verr := verifyClusterWith(e.File, kubectlPath)
 		if verr != nil {
 			return applyDoneMsg{backup: backup, applied: true, err: verr}
 		}
@@ -531,6 +584,8 @@ func (m model) View() string {
 		body = m.viewConfig()
 	case viewMessage:
 		body = m.viewMessage()
+	case viewKubectl:
+		body = m.viewKubectl()
 	}
 	return "\n" + body + "\n"
 }
@@ -732,6 +787,19 @@ func (m model) viewConfig() string {
 	return b.String()
 }
 
+func (m model) viewKubectl() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("kube-token") + "  " + warnStyle.Render("没有找到 kubectl"))
+	b.WriteString("\n\n")
+	b.WriteString("  " + textStyle.Render("用官方 kubectl 写入最稳妥，行为和命令行完全一致；") + "\n")
+	b.WriteString("  " + textStyle.Render("也可以不装，由本程序直接改 YAML（照样先备份，注释和其它字段保留）。") + "\n\n")
+	if m.note != "" {
+		b.WriteString("  " + badStyle.Render(m.note) + "\n\n")
+	}
+	b.WriteString(hints("enter", "一键安装官方 kubectl", "n", "不安装，用内置方式", "esc", "返回"))
+	return b.String()
+}
+
 func (m model) viewMessage() string {
 	head := badStyle.Render("✗ 操作失败")
 	if m.messageOK {
@@ -760,6 +828,9 @@ func (m model) viewResult() string {
 	b.WriteString("\n\n")
 	b.WriteString("  " + labelStyle.Render("文件") + textStyle.Render(shortenHome(e.File)) + "\n")
 	b.WriteString("  " + labelStyle.Render("user") + textStyle.Render(truncate(e.User, m.contentWidth()-10)) + "\n")
+	if m.method != "" {
+		b.WriteString("  " + labelStyle.Render("方式") + dimStyle.Render(m.method) + "\n")
+	}
 	if m.backup != "" {
 		b.WriteString("  " + labelStyle.Render("备份") + dimStyle.Render(shortenHome(m.backup)) + "\n")
 	}
