@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/hongmengchen/tui/theme"
 )
 
 type viewState int
@@ -29,28 +30,7 @@ const (
 	viewKcInstall
 )
 
-var (
-	cAccent = lipgloss.AdaptiveColor{Light: "#334155", Dark: "#CBD5E1"}
-	cDim    = lipgloss.AdaptiveColor{Light: "#64748B", Dark: "#94A3B8"}
-	cText   = lipgloss.AdaptiveColor{Light: "#0F172A", Dark: "#E2E8F0"}
-	cGood   = lipgloss.AdaptiveColor{Light: "#047857", Dark: "#34D399"}
-	cBad    = lipgloss.AdaptiveColor{Light: "#B91C1C", Dark: "#F87171"}
-	cWarn   = lipgloss.AdaptiveColor{Light: "#B45309", Dark: "#FBBF24"}
-	cLine   = lipgloss.AdaptiveColor{Light: "#E2E8F0", Dark: "#334155"}
-
-	titleStyle  = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
-	accentStyle = lipgloss.NewStyle().Foreground(cAccent)
-	dimStyle    = lipgloss.NewStyle().Foreground(cDim)
-	textStyle   = lipgloss.NewStyle().Foreground(cText)
-	goodStyle   = lipgloss.NewStyle().Foreground(cGood).Bold(true)
-	badStyle    = lipgloss.NewStyle().Foreground(cBad)
-	warnStyle   = lipgloss.NewStyle().Foreground(cWarn)
-	labelStyle  = lipgloss.NewStyle().Foreground(cDim).Width(9)
-	keyStyle    = lipgloss.NewStyle().Foreground(cAccent).Bold(true)
-
-	cardHi  = lipgloss.NewStyle().Border(lipgloss.NormalBorder(), false, false, false, true).BorderForeground(cAccent).PaddingLeft(1)
-	cardDim = lipgloss.NewStyle().Border(lipgloss.NormalBorder(), false, false, false, true).BorderForeground(cLine).PaddingLeft(1)
-)
+var styles = theme.Default
 
 type model struct {
 	entries  []Entry
@@ -140,18 +120,18 @@ func newModel(entries []Entry, scanErrs []error) model {
 	ti.Placeholder = "粘贴 token"
 	ti.EchoMode = textinput.EchoPassword
 	ti.EchoCharacter = '•'
-	ti.Prompt = accentStyle.Render("❯ ")
+	ti.Prompt = styles.Accent.Render("❯ ")
 	ti.CharLimit = 4096
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
-	sp.Style = lipgloss.NewStyle().Foreground(cAccent)
+	sp.Style = styles.Accent
 
 	pw := textinput.New()
 	pw.Placeholder = "Vault 密码"
 	pw.EchoMode = textinput.EchoPassword
 	pw.EchoCharacter = '•'
-	pw.Prompt = accentStyle.Render("❯ ")
+	pw.Prompt = styles.Accent.Render("❯ ")
 	pw.CharLimit = 1024
 
 	m := model{entries: entries, scanErrs: scanErrs, input: ti, spin: sp, pass: pw}
@@ -728,12 +708,12 @@ func (m model) View() string {
 
 func (m model) viewList() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("kube-token") + dimStyle.Render("  选择要更新的 user"))
+	b.WriteString(styles.Title.Render("kube-token") + styles.Dim.Render("  选择要更新的 user"))
 	b.WriteString("\n")
 	if len(m.entries) > 0 {
-		b.WriteString(dimStyle.Render(fmt.Sprintf("  %d 个 user · %d 个文件", len(m.entries), countFiles(m.entries))))
+		b.WriteString(styles.Dim.Render(fmt.Sprintf("  %d 个 user · %d 个文件", len(m.entries), countFiles(m.entries))))
 	} else {
-		b.WriteString(dimStyle.Render("  没有发现可用的 kubeconfig"))
+		b.WriteString(styles.Dim.Render("  没有发现可用的 kubeconfig"))
 	}
 	b.WriteString("\n\n")
 
@@ -742,16 +722,16 @@ func (m model) viewList() string {
 		b.WriteString("\n")
 	}
 	for _, err := range m.scanErrs {
-		b.WriteString(warnStyle.Render("  ! " + err.Error()))
+		b.WriteString(styles.Warn.Render("  ! " + err.Error()))
 		b.WriteString("\n")
 	}
 
 	if m.note != "" {
-		b.WriteString("\n  " + accentStyle.Render(m.note) + "\n")
+		b.WriteString("\n  " + styles.Accent.Render(m.note) + "\n")
 	}
 
 	b.WriteString("\n")
-	b.WriteString(hints("↑↓", "选择", "enter", "手动粘贴", "v", "从 Vault 获取", "c", "配置", "q", "退出"))
+	b.WriteString(styles.Hints("↑↓", "选择", "enter", "手动粘贴", "v", "从 Vault 获取", "c", "配置", "q", "退出"))
 	return b.String()
 }
 
@@ -759,82 +739,82 @@ func (m model) renderCard(e Entry, selected bool) string {
 	w := m.contentWidth()
 
 	expLabel, _, expired := expiryLabel(e)
-	exp := dimStyle.Render(expLabel)
+	exp := styles.Dim.Render(expLabel)
 	if e.HasExp {
 		if expired {
-			exp = badStyle.Render(expLabel)
+			exp = styles.Bad.Render(expLabel)
 		} else {
-			exp = goodStyle.Render(expLabel)
+			exp = styles.Good.Render(expLabel)
 		}
 	}
 
 	// 不用 ◆ ● 这类 East-Asian ambiguous 宽度字符：lipgloss 按 1 格算、终端按 2 格渲染会折行
 	tag := ""
 	if e.IsCurrent {
-		tag = accentStyle.Render("当前 context")
+		tag = styles.Accent.Render("当前 context")
 	}
 	fileAvail := w
 	if tag != "" {
 		fileAvail = w - lipgloss.Width(tag) - 1
 	}
-	fileShown := textStyle.Render(truncate(shortenHome(e.File), fileAvail))
+	fileShown := styles.Text.Render(theme.Truncate(shortenHome(e.File), fileAvail))
 	gap := w - lipgloss.Width(fileShown) - lipgloss.Width(tag)
 	if gap < 1 {
 		gap = 1
 	}
 	fileLine := fileShown + strings.Repeat(" ", gap) + tag
 
-	userLine := labelStyle.Render("user") + textStyle.Render(truncate(e.User, w-10))
+	userLine := styles.Label.Render("user") + styles.Text.Render(theme.Truncate(e.User, w-10))
 
-	tokenLine := labelStyle.Render("token")
+	tokenLine := styles.Label.Render("token")
 	if e.HasToken() {
-		tokenLine += dimStyle.Render(maskToken(e.Token)) + dimStyle.Render("  ·  ") + exp
+		tokenLine += styles.Dim.Render(maskToken(e.Token)) + styles.Dim.Render("  ·  ") + exp
 	} else {
-		tokenLine += warnStyle.Render("(空)")
+		tokenLine += styles.Warn.Render("(空)")
 	}
 	if e.HasExec {
-		tokenLine += "  " + warnStyle.Render("exec 自动续期")
+		tokenLine += "  " + styles.Warn.Render("exec 自动续期")
 	}
 
 	body := fileLine + "\n" + userLine + "\n" + tokenLine
 	if selected {
-		return cardHi.Render(body)
+		return styles.CardOn.Render(body)
 	}
-	return cardDim.Render(body)
+	return styles.CardOff.Render(body)
 }
 
 func (m model) summary(e Entry) string {
 	expLabel, _, expired := expiryLabel(e)
-	exp := dimStyle.Render(expLabel)
+	exp := styles.Dim.Render(expLabel)
 	if e.HasExp {
 		if expired {
-			exp = badStyle.Render(expLabel)
+			exp = styles.Bad.Render(expLabel)
 		} else {
-			exp = goodStyle.Render(expLabel)
+			exp = styles.Good.Render(expLabel)
 		}
 	}
 	lines := []string{
-		labelStyle.Render("文件") + textStyle.Render(shortenHome(e.File)),
-		labelStyle.Render("user") + textStyle.Render(truncate(e.User, m.contentWidth()-10)),
-		labelStyle.Render("当前") + dimStyle.Render(maskToken(e.Token)) + dimStyle.Render("  ·  ") + exp,
+		styles.Label.Render("文件") + styles.Text.Render(shortenHome(e.File)),
+		styles.Label.Render("user") + styles.Text.Render(theme.Truncate(e.User, m.contentWidth()-10)),
+		styles.Label.Render("当前") + styles.Dim.Render(maskToken(e.Token)) + styles.Dim.Render("  ·  ") + exp,
 	}
 	return "  " + strings.Join(lines, "\n  ")
 }
 
 func (m model) viewInput() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("kube-token") + dimStyle.Render("  粘贴新 token"))
+	b.WriteString(styles.Title.Render("kube-token") + styles.Dim.Render("  粘贴新 token"))
 	b.WriteString("\n\n")
 	b.WriteString(m.summary(m.selected))
 	b.WriteString("\n\n")
-	b.WriteString("  " + dimStyle.Render("新 token") + "\n")
+	b.WriteString("  " + styles.Dim.Render("新 token") + "\n")
 	b.WriteString("  " + m.input.View() + "\n\n")
 	if m.note != "" {
-		b.WriteString("  " + accentStyle.Render(m.note) + "\n\n")
+		b.WriteString("  " + styles.Accent.Render(m.note) + "\n\n")
 	} else {
-		b.WriteString("  " + dimStyle.Render("粘贴后回车；也可以按 ctrl+y 从剪贴板读取") + "\n\n")
+		b.WriteString("  " + styles.Dim.Render("粘贴后回车；也可以按 ctrl+y 从剪贴板读取") + "\n\n")
 	}
-	b.WriteString(hints("enter", "下一步", "ctrl+y", "读剪贴板", "esc", "返回"))
+	b.WriteString(styles.Hints("enter", "下一步", "ctrl+y", "读剪贴板", "esc", "返回"))
 	return b.String()
 }
 
@@ -843,23 +823,23 @@ func (m model) viewConfirm() string {
 	tok := strings.TrimSpace(m.input.Value())
 
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("kube-token") + dimStyle.Render("  确认替换"))
+	b.WriteString(styles.Title.Render("kube-token") + styles.Dim.Render("  确认替换"))
 	b.WriteString("\n\n")
-	b.WriteString("  " + labelStyle.Render("文件") + textStyle.Render(shortenHome(e.File)) + "\n")
-	b.WriteString("  " + labelStyle.Render("user") + textStyle.Render(truncate(e.User, m.contentWidth()-10)) + "\n")
-	b.WriteString("  " + labelStyle.Render("旧") + dimStyle.Render(maskToken(e.Token)) + "\n")
-	b.WriteString("  " + labelStyle.Render("新") + accentStyle.Render(maskToken(tok)) + "\n")
+	b.WriteString("  " + styles.Label.Render("文件") + styles.Text.Render(shortenHome(e.File)) + "\n")
+	b.WriteString("  " + styles.Label.Render("user") + styles.Text.Render(theme.Truncate(e.User, m.contentWidth()-10)) + "\n")
+	b.WriteString("  " + styles.Label.Render("旧") + styles.Dim.Render(maskToken(e.Token)) + "\n")
+	b.WriteString("  " + styles.Label.Render("新") + styles.Accent.Render(maskToken(tok)) + "\n")
 	if m.source != "" {
-		b.WriteString("  " + labelStyle.Render("来源") + dimStyle.Render(m.source) + "\n")
+		b.WriteString("  " + styles.Label.Render("来源") + styles.Dim.Render(m.source) + "\n")
 	}
 	b.WriteString("\n")
-	b.WriteString("  " + dimStyle.Render("会先备份成 "+shortenHome(e.File)+".bak.<时间戳>") + "\n")
+	b.WriteString("  " + styles.Dim.Render("会先备份成 "+shortenHome(e.File)+".bak.<时间戳>") + "\n")
 
 	if e.HasExec {
-		b.WriteString("\n  " + warnStyle.Render("注意：该 user 使用 exec 插件自动续期，写死 token 可能与它冲突") + "\n")
+		b.WriteString("\n  " + styles.Warn.Render("注意：该 user 使用 exec 插件自动续期，写死 token 可能与它冲突") + "\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(hints("enter", "应用", "esc", "返回"))
+	b.WriteString(styles.Hints("enter", "应用", "esc", "返回"))
 	return b.String()
 }
 
@@ -868,8 +848,8 @@ func (m model) viewWorking() string {
 	if text == "" {
 		text = "正在处理…"
 	}
-	return titleStyle.Render("kube-token") + dimStyle.Render("  处理中") + "\n\n" +
-		"  " + m.spin.View() + "  " + dimStyle.Render(text)
+	return styles.Title.Render("kube-token") + styles.Dim.Render("  处理中") + "\n\n" +
+		"  " + m.spin.View() + "  " + styles.Dim.Render(text)
 }
 
 func (m model) viewPass() string {
@@ -878,91 +858,91 @@ func (m model) viewPass() string {
 		user = m.cfg.Auth.Username
 	}
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("kube-token") + dimStyle.Render("  从 Vault 获取 token"))
+	b.WriteString(styles.Title.Render("kube-token") + styles.Dim.Render("  从 Vault 获取 token"))
 	b.WriteString("\n\n")
 	b.WriteString(m.summary(m.selected))
 	b.WriteString("\n\n")
 	if m.cfg != nil {
-		b.WriteString("  " + labelStyle.Render("Vault") + dimStyle.Render(m.cfg.Addr) + "\n")
-		b.WriteString("  " + labelStyle.Render("登录") + textStyle.Render(m.cfg.Auth.Method+" / "+user) + "\n")
-		b.WriteString("  " + labelStyle.Render("密钥") + dimStyle.Render(m.cfg.Secret.Path) + "\n\n")
+		b.WriteString("  " + styles.Label.Render("Vault") + styles.Dim.Render(m.cfg.Addr) + "\n")
+		b.WriteString("  " + styles.Label.Render("登录") + styles.Text.Render(m.cfg.Auth.Method+" / "+user) + "\n")
+		b.WriteString("  " + styles.Label.Render("密钥") + styles.Dim.Render(m.cfg.Secret.Path) + "\n\n")
 	}
-	b.WriteString("  " + dimStyle.Render("密码") + "\n")
+	b.WriteString("  " + styles.Dim.Render("密码") + "\n")
 	b.WriteString("  " + m.pass.View() + "\n\n")
 	if m.note != "" {
-		b.WriteString("  " + warnStyle.Render(m.note) + "\n\n")
+		b.WriteString("  " + styles.Warn.Render(m.note) + "\n\n")
 	} else {
-		b.WriteString("  " + dimStyle.Render("密码只用于这次登录，不会保存") + "\n\n")
+		b.WriteString("  " + styles.Dim.Render("密码只用于这次登录，不会保存") + "\n\n")
 	}
-	b.WriteString(hints("enter", "登录并获取", "esc", "返回"))
+	b.WriteString(styles.Hints("enter", "登录并获取", "esc", "返回"))
 	return b.String()
 }
 
 func (m model) viewConfig() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("kube-token") + dimStyle.Render("  配置（只保存在本机，不会上传）"))
+	b.WriteString(styles.Title.Render("kube-token") + styles.Dim.Render("  配置（只保存在本机，不会上传）"))
 	b.WriteString("\n\n")
 
 	for i, f := range m.fields {
 		label := fmt.Sprintf("%-10s", configLabels[i])
-		style := dimStyle.Render(label)
+		style := styles.Dim.Render(label)
 		value := f.View()
 		if i == m.focus {
-			style = accentStyle.Render(label)
-			value = accentStyle.Render(f.View())
+			style = styles.Accent.Render(label)
+			value = styles.Accent.Render(f.View())
 		}
 		b.WriteString("  " + style + " " + value + "\n")
 	}
 
-	b.WriteString("\n  " + dimStyle.Render("请求参数写成 k=v，多个用逗号分隔；留空的项使用默认值") + "\n")
+	b.WriteString("\n  " + styles.Dim.Render("请求参数写成 k=v，多个用逗号分隔；留空的项使用默认值") + "\n")
 	if m.note != "" {
-		b.WriteString("  " + warnStyle.Render(m.note) + "\n")
+		b.WriteString("  " + styles.Warn.Render(m.note) + "\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(hints("↑↓", "切换", "enter", "编辑", "ctrl+s", "保存", "esc", "取消"))
+	b.WriteString(styles.Hints("↑↓", "切换", "enter", "编辑", "ctrl+s", "保存", "esc", "取消"))
 	return b.String()
 }
 
 func (m model) viewKubectl() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("kube-token") + "  " + warnStyle.Render("没有找到 kubectl"))
+	b.WriteString(styles.Title.Render("kube-token") + "  " + styles.Warn.Render("没有找到 kubectl"))
 	b.WriteString("\n\n")
-	b.WriteString("  " + textStyle.Render("用官方 kubectl 写入最稳妥，行为和命令行完全一致；") + "\n")
-	b.WriteString("  " + textStyle.Render("也可以不装，由本程序直接改 YAML（照样先备份，注释和其它字段保留）。") + "\n\n")
+	b.WriteString("  " + styles.Text.Render("用官方 kubectl 写入最稳妥，行为和命令行完全一致；") + "\n")
+	b.WriteString("  " + styles.Text.Render("也可以不装，由本程序直接改 YAML（照样先备份，注释和其它字段保留）。") + "\n\n")
 	if m.note != "" {
-		b.WriteString("  " + badStyle.Render(m.note) + "\n\n")
+		b.WriteString("  " + styles.Bad.Render(m.note) + "\n\n")
 	}
-	b.WriteString(hints("enter", "一键安装官方 kubectl", "n", "不安装，用内置方式", "esc", "返回"))
+	b.WriteString(styles.Hints("enter", "一键安装官方 kubectl", "n", "不安装，用内置方式", "esc", "返回"))
 	return b.String()
 }
 
 // viewKcInstall 和 `kube-token upgrade` 用同一套动画：spinner + 渐变进度条 + 大小/速度
 func (m model) viewKcInstall() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("kube-token") + dimStyle.Render("  安装官方 kubectl"))
+	b.WriteString(styles.Title.Render("kube-token") + styles.Dim.Render("  安装官方 kubectl"))
 	b.WriteString("\n\n")
 
 	switch m.kcPhase {
 	case kcInstalling:
-		b.WriteString("  " + m.spin.View() + " " + textStyle.Render("正在校验并安装…"))
+		b.WriteString("  " + m.spin.View() + " " + styles.Text.Render("正在校验并安装…"))
 		b.WriteString("\n\n  " + m.kcBar.View())
-		b.WriteString("\n\n  " + dimStyle.Render(m.kcProgressText()))
+		b.WriteString("\n\n  " + styles.Dim.Render(m.kcProgressText()))
 	default:
 		title := "正在下载官方 kubectl"
 		if m.kcVersion != "" {
 			title += " " + m.kcVersion
 		}
-		b.WriteString("  " + m.spin.View() + " " + textStyle.Render(title))
+		b.WriteString("  " + m.spin.View() + " " + styles.Text.Render(title))
 		if m.kcTotal > 0 {
 			b.WriteString("\n\n  " + m.kcBar.View())
-			b.WriteString("\n\n  " + dimStyle.Render(m.kcProgressText()))
+			b.WriteString("\n\n  " + styles.Dim.Render(m.kcProgressText()))
 		} else {
-			b.WriteString("\n\n  " + dimStyle.Render("正在连接 dl.k8s.io…"))
+			b.WriteString("\n\n  " + styles.Dim.Render("正在连接 dl.k8s.io…"))
 		}
 	}
 
 	if m.kcDir != "" {
-		b.WriteString("\n\n  " + dimStyle.Render("装到 "+shortenHome(m.kcDir)))
+		b.WriteString("\n\n  " + styles.Dim.Render("装到 "+shortenHome(m.kcDir)))
 	}
 	return b.String()
 }
@@ -981,13 +961,13 @@ func (m model) kcProgressText() string {
 }
 
 func (m model) viewMessage() string {
-	head := badStyle.Render("✗ 操作失败")
+	head := styles.Bad.Render("✗ 操作失败")
 	if m.messageOK {
-		head = goodStyle.Render("✓ 完成")
+		head = styles.Good.Render("✓ 完成")
 	}
-	return titleStyle.Render("kube-token") + "  " + head + "\n\n" +
-		"  " + textStyle.Render(m.message) + "\n\n" +
-		hints("任意键", "返回")
+	return styles.Title.Render("kube-token") + "  " + head + "\n\n" +
+		"  " + styles.Text.Render(m.message) + "\n\n" +
+		styles.Hints("任意键", "返回")
 }
 
 func (m model) viewResult() string {
@@ -996,40 +976,40 @@ func (m model) viewResult() string {
 	var head string
 	switch {
 	case m.resultOK:
-		head = goodStyle.Render("✓ 已更新")
+		head = styles.Good.Render("✓ 已更新")
 	case m.wrote:
-		head = warnStyle.Render("! 已写入，但验证未通过")
+		head = styles.Warn.Render("! 已写入，但验证未通过")
 	default:
-		head = badStyle.Render("✗ 替换失败")
+		head = styles.Bad.Render("✗ 替换失败")
 	}
 
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("kube-token") + "  " + head)
+	b.WriteString(styles.Title.Render("kube-token") + "  " + head)
 	b.WriteString("\n\n")
-	b.WriteString("  " + labelStyle.Render("文件") + textStyle.Render(shortenHome(e.File)) + "\n")
-	b.WriteString("  " + labelStyle.Render("user") + textStyle.Render(truncate(e.User, m.contentWidth()-10)) + "\n")
+	b.WriteString("  " + styles.Label.Render("文件") + styles.Text.Render(shortenHome(e.File)) + "\n")
+	b.WriteString("  " + styles.Label.Render("user") + styles.Text.Render(theme.Truncate(e.User, m.contentWidth()-10)) + "\n")
 	if m.method != "" {
-		b.WriteString("  " + labelStyle.Render("方式") + dimStyle.Render(m.method) + "\n")
+		b.WriteString("  " + styles.Label.Render("方式") + styles.Dim.Render(m.method) + "\n")
 	}
 	if m.backup != "" {
-		b.WriteString("  " + labelStyle.Render("备份") + dimStyle.Render(shortenHome(m.backup)) + "\n")
+		b.WriteString("  " + styles.Label.Render("备份") + styles.Dim.Render(shortenHome(m.backup)) + "\n")
 	}
 	if m.result != "" {
 		label := "验证"
-		style := goodStyle
+		style := styles.Good
 		switch {
 		case !m.resultOK && m.wrote:
-			label, style = "问题", warnStyle
+			label, style = "问题", styles.Warn
 		case !m.resultOK:
-			label, style = "错误", badStyle
+			label, style = "错误", styles.Bad
 		}
-		b.WriteString("  " + labelStyle.Render(label) + style.Render(m.result) + "\n")
+		b.WriteString("  " + styles.Label.Render(label) + style.Render(m.result) + "\n")
 	}
 	if !m.resultOK && m.wrote && m.backup != "" {
-		b.WriteString("\n  " + dimStyle.Render("回滚: cp "+shortenHome(m.backup)+" "+shortenHome(e.File)) + "\n")
+		b.WriteString("\n  " + styles.Dim.Render("回滚: cp "+shortenHome(m.backup)+" "+shortenHome(e.File)) + "\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(hints("任意键", "返回列表"))
+	b.WriteString(styles.Hints("任意键", "返回列表"))
 	return b.String()
 }
 
@@ -1042,14 +1022,6 @@ func (m model) contentWidth() int {
 		w = 110
 	}
 	return w
-}
-
-func hints(pairs ...string) string {
-	var parts []string
-	for i := 0; i+1 < len(pairs); i += 2 {
-		parts = append(parts, keyStyle.Render(pairs[i])+dimStyle.Render(" "+pairs[i+1]))
-	}
-	return "  " + strings.Join(parts, dimStyle.Render("  ·  "))
 }
 
 func countFiles(entries []Entry) int {
@@ -1069,15 +1041,4 @@ func shortenHome(p string) string {
 		return "~" + p[len(home):]
 	}
 	return p
-}
-
-func truncate(s string, w int) string {
-	if w <= 0 || lipgloss.Width(s) <= w {
-		return s
-	}
-	r := []rune(s)
-	for len(r) > 0 && lipgloss.Width(string(r)) > w-1 {
-		r = r[:len(r)-1]
-	}
-	return string(r) + "…"
 }

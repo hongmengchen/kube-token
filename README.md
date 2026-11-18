@@ -1,6 +1,6 @@
 # kube-token
 
-一个终端 TUI：粘贴一个新 token，直接替换 kubeconfig 里对应 user 的旧 token。
+一个终端 TUI：粘贴一个新 token，直接替换 kubeconfig 里对应 user 的旧 token。界面样式来自共享的 [tui](https://github.com/hongmengchen/tui) 主题库。
 
 给 EKS / K8s 这类需要手动更新 `users[].user.token` 的场景用。启动、选 user、粘 token、回车，剩下的备份和验证都由它做。
 

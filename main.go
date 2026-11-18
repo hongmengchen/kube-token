@@ -8,10 +8,9 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
-var version = "0.4.3"
+var version = "0.5.0"
 
 func usage() {
 	fmt.Fprintf(os.Stderr, `kube-token %s — 粘贴新 token 直接替换 kubeconfig 里的旧值
@@ -205,7 +204,7 @@ func printList(entries []Entry, scanErrs []error) {
 		}
 		exp := expLabel
 		if expired {
-			exp = lipgloss.NewStyle().Foreground(cBad).Render(expLabel)
+			exp = styles.Bad.Render(expLabel)
 		}
 		fmt.Printf("%s %s\n  user  %s\n  token %s  ·  %s\n\n",
 			mark, shortenHome(e.File), e.User, maskToken(e.Token), exp)

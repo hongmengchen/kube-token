@@ -77,7 +77,7 @@ func runUpgradeTUI(force bool) int {
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
-	sp.Style = accentStyle
+	sp.Style = styles.Accent
 
 	m := &upgradeModel{
 		spin:     sp,
@@ -266,35 +266,35 @@ func (m *upgradeModel) waitProgress() tea.Cmd {
 
 func (m *upgradeModel) View() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("kube-token") + dimStyle.Render("  升级"))
+	b.WriteString(styles.Title.Render("kube-token") + styles.Dim.Render("  升级"))
 	b.WriteString("\n\n")
 
 	switch m.phase {
 	case upChecking:
-		b.WriteString("  " + m.spin.View() + " " + dimStyle.Render("正在检查最新版本…"))
-		b.WriteString("\n\n  " + dimStyle.Render("当前 "+version))
+		b.WriteString("  " + m.spin.View() + " " + styles.Dim.Render("正在检查最新版本…"))
+		b.WriteString("\n\n  " + styles.Dim.Render("当前 "+version))
 
 	case upDownloading:
 		title := "正在下载 " + m.rel.TagName
-		b.WriteString("  " + m.spin.View() + " " + textStyle.Render(title))
+		b.WriteString("  " + m.spin.View() + " " + styles.Text.Render(title))
 		b.WriteString("\n\n  " + m.bar.View())
-		b.WriteString("\n\n  " + dimStyle.Render(m.progressText()))
+		b.WriteString("\n\n  " + styles.Dim.Render(m.progressText()))
 
 	case upInstalling:
-		b.WriteString("  " + m.spin.View() + " " + textStyle.Render("正在替换可执行文件…"))
-		b.WriteString("\n\n  " + dimStyle.Render(shortenHome(m.exe)))
+		b.WriteString("  " + m.spin.View() + " " + styles.Text.Render("正在替换可执行文件…"))
+		b.WriteString("\n\n  " + styles.Dim.Render(shortenHome(m.exe)))
 
 	case upLatest:
-		b.WriteString("  " + goodStyle.Render("✓ 已是最新版本") + dimStyle.Render("  "+version))
+		b.WriteString("  " + styles.Good.Render("✓ 已是最新版本") + styles.Dim.Render("  "+version))
 
 	case upDone:
-		b.WriteString("  " + goodStyle.Render("✓ 已更新到 "+m.rel.TagName))
-		b.WriteString("\n\n  " + dimStyle.Render(shortenHome(m.exe)))
+		b.WriteString("  " + styles.Good.Render("✓ 已更新到 "+m.rel.TagName))
+		b.WriteString("\n\n  " + styles.Dim.Render(shortenHome(m.exe)))
 
 	case upFailed:
-		b.WriteString("  " + badStyle.Render("✗ 更新失败"))
-		b.WriteString("\n\n  " + warnStyle.Render(m.err.Error()))
-		b.WriteString("\n\n" + hints("任意键", "退出"))
+		b.WriteString("  " + styles.Bad.Render("✗ 更新失败"))
+		b.WriteString("\n\n  " + styles.Warn.Render(m.err.Error()))
+		b.WriteString("\n\n" + styles.Hints("任意键", "退出"))
 	}
 
 	return b.String()
