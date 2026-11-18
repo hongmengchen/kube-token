@@ -233,4 +233,4 @@ go build -o kube-token .
 
 ## License
 
-MIT
+本项目采用 [MIT](LICENSE) 协议，Copyright (c) 2026 chenliang。
