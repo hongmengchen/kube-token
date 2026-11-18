@@ -1,3 +1,7 @@
 /kube-token
 /kube-token.exe
 /dist/
+
+# 本地 Vault 配置里可能有公司内部地址/角色，永不提交
+config.yaml
+config.yml

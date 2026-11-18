@@ -21,6 +21,7 @@ kube-token  选择要更新的 user
 - **多 kubeconfig 扫描**：自动读取 `$KUBECONFIG`（多个文件用 `:` 或 `;` 分隔）、`~/.kube/config`、`~/.kube/*.{yaml,yml,conf}`，列出所有 user
 - **JWT 过期倒计时**：解析 token 里的 `exp`，直接显示「剩 14m02s」或「已过期 3h」
 - **剪贴板直读**：`ctrl+y` 从系统剪贴板取 token，不用手动粘贴
+- **Vault 直接取 token**：`v` 输入一次密码，自动登录 Vault、调 creds 接口拿服务账号 token 并写入 kubeconfig；地址、挂载点、角色都只存在本机配置里，不随仓库分发
 - **自动备份**：写入前存成 `config.bak.<时间戳>`，权限 `0600`
 - **写入后校验**：从文件回读确认 token 真的变了，再用 `kubectl get --raw /version` 验证认证是否生效
 - **单二进制**：Go 编译，macOS / Linux / Windows 都能直接跑，不需要 Python、Node 之类运行时
@@ -62,6 +63,8 @@ kube-token
 | --- | --- |
 | `↑` `↓` / `j` `k` | 选择 user |
 | `enter` | 进入输入页 / 下一步 / 应用 |
+| `v` | 从 Vault 登录取 token（需先按 `c` 配好） |
+| `c` | 编辑 Vault 配置（只存本机） |
 | `ctrl+y` | 从剪贴板读取 token |
 | `r` | 重新扫描 kubeconfig |
 | `esc` | 返回上一页 |
@@ -81,6 +84,71 @@ kube-token -list
 ```
 
 `-set-token` 的退出码：`0` 成功，`1` 写入失败，`2` 已写入但验证失败（会打印回滚命令）。
+
+## 从 Vault 获取 token
+
+如果你的 token 来自 Vault（比如 Kubernetes secrets engine 的 `creds/<role>`），不用再手动 `vault write` 复制粘贴：
+
+```bash
+kube-token
+# 第一次：按 c 填写配置，ctrl+s 保存
+# 之后每次：按 v → 输入密码 → enter → 确认替换
+```
+
+程序直接走 Vault 的 HTTP API，**不需要安装 vault CLI**，也不需要预先 `vault login` 或设置 `VAULT_ADDR`。
+
+### 配置
+
+按 `c` 打开的配置项：
+
+| 字段 | 说明 | 示例 |
+| --- | --- | --- |
+| Vault 地址 | Vault 的访问地址 | `https://vault.example.com` |
+| 认证方式 | `ldap` / `userpass` / `token` | `ldap` |
+| 认证路径 | 认证方法的挂载点，一般同认证方式 | `ldap` |
+| 用户名 | 认证用的用户名（`token` 方式留空） | `alice` |
+| 密钥路径 | 读取 token 的 API 路径（不含开头的 `/v1/`） | `<mount>/creds/<role>` |
+| 请求参数 | 调用密钥接口时带的参数，写成 `k=v,k2=v2` | `kubernetes_namespace=<namespace>` |
+| 目标文件 | 写入哪个 kubeconfig，留空用列表里选中的 | 留空 |
+| 目标 user | 写入哪个 user，留空用列表里选中的 | 留空 |
+
+保存位置（权限 `0600`，只在本机，不会出现在仓库里）：
+
+- macOS：`~/Library/Application Support/kube-token/config.yaml`
+- Linux：`~/.config/kube-token/config.yaml`
+- Windows：`%AppData%\kube-token\config.yaml`
+
+内容就是上面这些字段：
+
+```yaml
+addr: https://vault.example.com
+auth:
+    method: ldap
+    path: ldap
+    username: alice
+secret:
+    path: <mount>/creds/<role>
+    params:
+        kubernetes_namespace: <namespace>
+```
+
+还有几个不在表单里的可选项，需要时手动编辑这个文件：
+
+```yaml
+namespace: <vault-namespace>   # 多租户 Vault 才需要，会变成 X-Vault-Namespace
+tls:
+    ca_cert: /path/to/ca.pem   # 公司自签证书
+    insecure: true             # 跳过证书校验，仅用于内网测试
+```
+
+### 流程与安全
+
+1. 用你的密码调用 `auth/<path>/login/<username>` 换 Vault client token
+2. 用这个 client token 调 `POST /v1/<密钥路径>`，取 `data.service_account_token`（也兼容 `token` / KV v2 的 `data.data.token`）
+3. 拿到 token 后进确认页，来源显示 `Vault`；enter 才会真正写进 kubeconfig
+4. 密码只在这次登录用，不落盘；Vault client token 也只在内存里用一次，不写任何文件
+
+登录失败会停在提示页显示 Vault 返回的错误（比如 `invalid username or password`），密码输错不会有副作用。token 已经取到但文件写入失败时，回退到列表重来即可。
 
 ## 更新
 
@@ -108,6 +176,7 @@ kube-token upgrade --force  # 版本相同也重新安装
 - 界面上只显示掩码（头 8 位 + 尾 4 位）
 - 文件写入交给 `kubectl`，它会把配置重写成标准格式；原文件完整备份在旁边的 `.bak.<时间戳>`
 - 备份文件权限 `0600`
+- Vault 的公司内部地址、挂载点、角色、用户只写在本地配置里（`0600`），不进入程序、不进入仓库；仓库 `.gitignore` 也屏蔽了 `config.yaml`
 
 如果某个 user 用的是 `exec` 插件（例如 `aws eks get-token`），TUI 会在详情里标注「exec 自动续期」——这种 user 写死 token 可能和插件冲突，一般不需要用它。
 

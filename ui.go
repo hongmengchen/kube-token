@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -18,6 +20,9 @@ const (
 	viewConfirm
 	viewWorking
 	viewResult
+	viewPass
+	viewConfig
+	viewMessage
 )
 
 var (
@@ -59,6 +64,16 @@ type model struct {
 	wrote    bool
 	note     string
 
+	// Vault
+	cfg       *vaultConfig
+	pass      textinput.Model
+	fields    []textinput.Model
+	focus     int
+	source    string // token 来源：Vault / 手动
+	workText  string
+	message   string
+	messageOK bool
+
 	spin spinner.Model
 }
 
@@ -67,6 +82,11 @@ type applyDoneMsg struct {
 	verify  string
 	applied bool
 	err     error
+}
+
+type vaultDoneMsg struct {
+	token string
+	err   error
 }
 
 func newModel(entries []Entry, scanErrs []error) model {
@@ -81,7 +101,20 @@ func newModel(entries []Entry, scanErrs []error) model {
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(cAccent)
 
-	return model{entries: entries, scanErrs: scanErrs, input: ti, spin: sp}
+	pw := textinput.New()
+	pw.Placeholder = "Vault 密码"
+	pw.EchoMode = textinput.EchoPassword
+	pw.EchoCharacter = '•'
+	pw.Prompt = accentStyle.Render("❯ ")
+	pw.CharLimit = 1024
+
+	m := model{entries: entries, scanErrs: scanErrs, input: ti, spin: sp, pass: pw}
+	if cfg, err := loadVaultConfig(); err != nil {
+		m.note = "读取 Vault 配置失败: " + err.Error()
+	} else {
+		m.cfg = cfg
+	}
+	return m
 }
 
 func (m model) Init() tea.Cmd { return nil }
@@ -97,6 +130,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		return m.handleKey(msg)
+
+	case vaultDoneMsg:
+		if msg.err != nil {
+			m.state = viewMessage
+			m.message = msg.err.Error()
+			m.messageOK = false
+			return m, nil
+		}
+		m.input.SetValue(msg.token)
+		m.input.CursorEnd()
+		m.source = "Vault"
+		m.state = viewConfirm
+		return m, nil
 
 	case applyDoneMsg:
 		m.state = viewResult
@@ -115,10 +161,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// 输入框还需要接收光标闪烁之类的消息
-	if m.state == viewInput || m.state == viewConfirm {
+	switch m.state {
+	case viewInput, viewConfirm:
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		return m, cmd
+	case viewPass:
+		var cmd tea.Cmd
+		m.pass, cmd = m.pass.Update(msg)
+		return m, cmd
+	case viewConfig:
+		if len(m.fields) > 0 && m.focus < len(m.fields) {
+			var cmd tea.Cmd
+			m.fields[m.focus], cmd = m.fields[m.focus].Update(msg)
+			return m, cmd
+		}
 	}
 	return m, nil
 }
@@ -147,6 +204,12 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "r":
 			m.entries, m.scanErrs = scanEntries()
 			m.clampCursor()
+		case "v":
+			return m.startVaultFlow()
+		case "c":
+			m.openConfigForm()
+			m.state = viewConfig
+			return m, textinput.Blink
 		case "q", "esc":
 			return m, tea.Quit
 		}
@@ -189,25 +252,239 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case viewConfirm:
 		switch k.String() {
 		case "esc":
+			// 从 Vault 来的 token 回退时直接回列表，避免退回一个空输入框
+			if m.source == "Vault" {
+				m.source = ""
+				m.state = viewList
+				return m, nil
+			}
 			m.state = viewInput
 			m.input.Focus()
 			return m, textinput.Blink
 		case "enter":
 			m.state = viewWorking
+			m.workText = "正在写入并验证 token…"
 			tok := strings.TrimSpace(m.input.Value())
 			return m, tea.Batch(m.spin.Tick, applyCmd(m.selected, tok))
 		}
 
+	case viewPass:
+		switch k.String() {
+		case "esc":
+			m.pass.Blur()
+			m.source = ""
+			m.state = viewList
+			return m, nil
+		case "enter":
+			pw := m.pass.Value()
+			if strings.TrimSpace(pw) == "" {
+				m.note = "密码不能为空"
+				return m, nil
+			}
+			m.pass.Blur()
+			m.state = viewWorking
+			m.workText = "正在登录 Vault 并获取 token…"
+			cfg := m.cfg
+			return m, tea.Batch(m.spin.Tick, func() tea.Msg {
+				tok, err := vaultFetchToken(cfg, pw)
+				return vaultDoneMsg{token: tok, err: err}
+			})
+		}
+		var cmd tea.Cmd
+		m.pass, cmd = m.pass.Update(k)
+		return m, cmd
+
+	case viewConfig:
+		switch k.String() {
+		case "esc":
+			m.state = viewList
+			m.note = "已取消"
+			return m, nil
+		case "up", "shift+tab":
+			m.moveFocus(-1)
+			return m, nil
+		case "down", "tab":
+			m.moveFocus(1)
+			return m, nil
+		case "ctrl+s":
+			m.saveConfigFromForm()
+			return m, nil
+		}
+		if len(m.fields) > 0 {
+			var cmd tea.Cmd
+			m.fields[m.focus], cmd = m.fields[m.focus].Update(k)
+			return m, cmd
+		}
+		return m, nil
+
 	case viewWorking:
-		// 写入过程中忽略按键，等结果
+		// 处理过程中忽略按键，等结果
+
+	case viewMessage:
+		m.state = viewList
+		return m, nil
 
 	case viewResult:
 		m.state = viewList
+		m.source = ""
 		m.entries, m.scanErrs = scanEntries()
 		m.clampCursor()
 		return m, nil
 	}
 	return m, nil
+}
+
+func (m *model) showMessage(text string, ok bool) {
+	m.state = viewMessage
+	m.message = text
+	m.messageOK = ok
+}
+
+func (m *model) startVaultFlow() (tea.Model, tea.Cmd) {
+	if len(m.entries) == 0 {
+		m.showMessage("没有可用的 kubeconfig 条目", false)
+		return m, nil
+	}
+	if m.cfg == nil {
+		m.openConfigForm()
+		m.state = viewConfig
+		m.note = ""
+		return m, textinput.Blink
+	}
+
+	entry := m.entries[m.cursor]
+	if m.cfg.Target.User != "" || m.cfg.Target.File != "" {
+		found, err := pickEntry(m.entries, m.cfg.Target.User, m.cfg.Target.File)
+		if err != nil {
+			m.showMessage(err.Error(), false)
+			return m, nil
+		}
+		entry = found
+	}
+
+	m.selected = entry
+	m.source = "Vault"
+	m.pass.SetValue("")
+	m.pass.Focus()
+	m.note = ""
+	m.state = viewPass
+	return m, textinput.Blink
+}
+
+var configLabels = []string{
+	"Vault 地址", "认证方式", "认证路径", "用户名",
+	"密钥路径", "请求参数", "目标文件", "目标 user",
+}
+
+func (m *model) openConfigForm() {
+	cfg := &vaultConfig{}
+	if m.cfg != nil {
+		*cfg = *m.cfg
+	} else {
+		cfg.Addr = os.Getenv("VAULT_ADDR")
+		cfg.Auth.Method = "ldap"
+		cfg.Auth.Path = "ldap"
+		cfg.Auth.Username = os.Getenv("USER")
+		if cfg.Auth.Username == "" {
+			cfg.Auth.Username = os.Getenv("USERNAME")
+		}
+	}
+	normalizeVaultConfig(cfg)
+
+	values := []string{
+		cfg.Addr, cfg.Auth.Method, cfg.Auth.Path, cfg.Auth.Username,
+		cfg.Secret.Path, encodeParams(cfg.Secret.Params), cfg.Target.File, cfg.Target.User,
+	}
+	placeholders := []string{
+		"https://vault.example.com", "ldap", "ldap", "你的用户名",
+		"<mount>/creds/<role>", "<key>=<value>", "(留空=当前扫描到的文件)", "(留空=当前 context 的 user)",
+	}
+
+	m.fields = make([]textinput.Model, len(values))
+	for i, v := range values {
+		ti := textinput.New()
+		ti.Prompt = ""
+		ti.SetValue(v)
+		ti.Placeholder = placeholders[i]
+		ti.CharLimit = 1024
+		m.fields[i] = ti
+	}
+	m.focus = 0
+	m.fields[0].Focus()
+	m.note = ""
+}
+
+func (m *model) moveFocus(delta int) {
+	if len(m.fields) == 0 {
+		return
+	}
+	m.fields[m.focus].Blur()
+	m.focus = (m.focus + delta + len(m.fields)) % len(m.fields)
+	m.fields[m.focus].Focus()
+}
+
+func (m *model) saveConfigFromForm() {
+	if len(m.fields) < len(configLabels) {
+		return
+	}
+	get := func(i int) string { return strings.TrimSpace(m.fields[i].Value()) }
+
+	cfg := &vaultConfig{
+		Addr: get(0),
+		Auth: vaultAuth{Method: get(1), Path: get(2), Username: get(3)},
+		Secret: vaultSecret{
+			Path:   get(4),
+			Params: parseParams(get(5)),
+		},
+		Target: vaultTarget{File: expandHome(get(6)), User: get(7)},
+	}
+	if m.cfg != nil {
+		cfg.Namespace = m.cfg.Namespace
+		cfg.TLS = m.cfg.TLS
+	}
+	normalizeVaultConfig(cfg)
+
+	if err := cfg.validate(); err != nil {
+		m.note = err.Error()
+		return
+	}
+	path, err := saveVaultConfig(cfg)
+	if err != nil {
+		m.note = "保存失败: " + err.Error()
+		return
+	}
+	m.cfg = cfg
+	m.state = viewList
+	m.note = "已保存到 " + shortenHome(path) + "，按 v 获取 token"
+}
+
+// encodeParams / parseParams：把 map 在表单里表示成 k=v,k2=v2
+func encodeParams(params map[string]string) string {
+	var parts []string
+	for k, v := range params {
+		parts = append(parts, k+"="+v)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
+func parseParams(s string) map[string]string {
+	out := map[string]string{}
+	for _, part := range strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n'
+	}) {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(part, "=")
+		if !ok {
+			out[part] = ""
+			continue
+		}
+		out[strings.TrimSpace(k)] = strings.TrimSpace(v)
+	}
+	return out
 }
 
 func applyCmd(e Entry, token string) tea.Cmd {
@@ -248,6 +525,12 @@ func (m model) View() string {
 		body = m.viewWorking()
 	case viewResult:
 		body = m.viewResult()
+	case viewPass:
+		body = m.viewPass()
+	case viewConfig:
+		body = m.viewConfig()
+	case viewMessage:
+		body = m.viewMessage()
 	}
 	return "\n" + body + "\n"
 }
@@ -272,8 +555,12 @@ func (m model) viewList() string {
 		b.WriteString("\n")
 	}
 
+	if m.note != "" {
+		b.WriteString("\n  " + accentStyle.Render(m.note) + "\n")
+	}
+
 	b.WriteString("\n")
-	b.WriteString(hints("↑↓", "选择", "enter", "更新 token", "r", "重新扫描", "q", "退出"))
+	b.WriteString(hints("↑↓", "选择", "enter", "手动粘贴", "v", "从 Vault 获取", "c", "配置", "q", "退出"))
 	return b.String()
 }
 
@@ -371,6 +658,9 @@ func (m model) viewConfirm() string {
 	b.WriteString("  " + labelStyle.Render("user") + textStyle.Render(truncate(e.User, m.contentWidth()-10)) + "\n")
 	b.WriteString("  " + labelStyle.Render("旧") + dimStyle.Render(maskToken(e.Token)) + "\n")
 	b.WriteString("  " + labelStyle.Render("新") + accentStyle.Render(maskToken(tok)) + "\n")
+	if m.source != "" {
+		b.WriteString("  " + labelStyle.Render("来源") + dimStyle.Render(m.source) + "\n")
+	}
 	b.WriteString("\n")
 	b.WriteString("  " + dimStyle.Render("会先备份成 "+shortenHome(e.File)+".bak.<时间戳>") + "\n")
 
@@ -383,8 +673,73 @@ func (m model) viewConfirm() string {
 }
 
 func (m model) viewWorking() string {
+	text := m.workText
+	if text == "" {
+		text = "正在处理…"
+	}
 	return titleStyle.Render("kube-token") + dimStyle.Render("  处理中") + "\n\n" +
-		"  " + m.spin.View() + "  正在写入并验证 token…"
+		"  " + m.spin.View() + "  " + dimStyle.Render(text)
+}
+
+func (m model) viewPass() string {
+	user := ""
+	if m.cfg != nil {
+		user = m.cfg.Auth.Username
+	}
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("kube-token") + dimStyle.Render("  从 Vault 获取 token"))
+	b.WriteString("\n\n")
+	b.WriteString(m.summary(m.selected))
+	b.WriteString("\n\n")
+	if m.cfg != nil {
+		b.WriteString("  " + labelStyle.Render("Vault") + dimStyle.Render(m.cfg.Addr) + "\n")
+		b.WriteString("  " + labelStyle.Render("登录") + textStyle.Render(m.cfg.Auth.Method+" / "+user) + "\n")
+		b.WriteString("  " + labelStyle.Render("密钥") + dimStyle.Render(m.cfg.Secret.Path) + "\n\n")
+	}
+	b.WriteString("  " + dimStyle.Render("密码") + "\n")
+	b.WriteString("  " + m.pass.View() + "\n\n")
+	if m.note != "" {
+		b.WriteString("  " + warnStyle.Render(m.note) + "\n\n")
+	} else {
+		b.WriteString("  " + dimStyle.Render("密码只用于这次登录，不会保存") + "\n\n")
+	}
+	b.WriteString(hints("enter", "登录并获取", "esc", "返回"))
+	return b.String()
+}
+
+func (m model) viewConfig() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("kube-token") + dimStyle.Render("  配置（只保存在本机，不会上传）"))
+	b.WriteString("\n\n")
+
+	for i, f := range m.fields {
+		label := fmt.Sprintf("%-10s", configLabels[i])
+		style := dimStyle.Render(label)
+		value := f.View()
+		if i == m.focus {
+			style = accentStyle.Render(label)
+			value = accentStyle.Render(f.View())
+		}
+		b.WriteString("  " + style + " " + value + "\n")
+	}
+
+	b.WriteString("\n  " + dimStyle.Render("请求参数写成 k=v，多个用逗号分隔；留空的项使用默认值") + "\n")
+	if m.note != "" {
+		b.WriteString("  " + warnStyle.Render(m.note) + "\n")
+	}
+	b.WriteString("\n")
+	b.WriteString(hints("↑↓", "切换", "enter", "编辑", "ctrl+s", "保存", "esc", "取消"))
+	return b.String()
+}
+
+func (m model) viewMessage() string {
+	head := badStyle.Render("✗ 操作失败")
+	if m.messageOK {
+		head = goodStyle.Render("✓ 完成")
+	}
+	return titleStyle.Render("kube-token") + "  " + head + "\n\n" +
+		"  " + textStyle.Render(m.message) + "\n\n" +
+		hints("任意键", "返回")
 }
 
 func (m model) viewResult() string {

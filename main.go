@@ -11,7 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-var version = "0.2.0"
+var version = "0.3.0"
 
 func usage() {
 	fmt.Fprintf(os.Stderr, `kube-token %s — 粘贴新 token 直接替换 kubeconfig 里的旧值
