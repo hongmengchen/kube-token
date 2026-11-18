@@ -1,0 +1,112 @@
+# kube-token
+
+一个终端 TUI：粘贴一个新 token，直接替换 kubeconfig 里对应 user 的旧 token。
+
+给 EKS / K8s 这类需要手动更新 `users[].user.token` 的场景用。启动、选 user、粘 token、回车，剩下的备份和验证都由它做。
+
+```
+kube-token  选择要更新的 user
+  2 个 user · 2 个文件
+│ ~/.kube/config                                                    当前 context
+│ user     arn:aws-cn:eks:cn-northwest-1:660922615903:cluster/Sought
+│ token    eyJhbGci…-llw  ·  剩 14m02s
+│ ~/.kube/prod.yaml
+│ user     dev-sa
+│ token    eyJhbGci…9pg  ·  已过期 3h
+  ↑↓ 选择  ·  enter 更新 token  ·  r 重新扫描  ·  q 退出
+```
+
+## 特性
+
+- **多 kubeconfig 扫描**：自动读取 `$KUBECONFIG`（多个文件用 `:` 或 `;` 分隔）、`~/.kube/config`、`~/.kube/*.{yaml,yml,conf}`，列出所有 user
+- **JWT 过期倒计时**：解析 token 里的 `exp`，直接显示「剩 14m02s」或「已过期 3h」
+- **剪贴板直读**：`ctrl+y` 从系统剪贴板取 token，不用手动粘贴
+- **自动备份**：写入前存成 `config.bak.<时间戳>`，权限 `0600`
+- **写入后校验**：从文件回读确认 token 真的变了，再用 `kubectl get --raw /version` 验证认证是否生效
+- **单二进制**：Go 编译，macOS / Linux / Windows 都能直接跑，不需要 Python、Node 之类运行时
+- **非交互模式**：`-set-token` 给脚本用，一条命令搞定
+
+## 安装
+
+从 [Releases](../../releases) 下载对应平台的二进制，改名放到 `PATH` 里：
+
+```bash
+chmod +x kube-token_darwin_arm64
+sudo mv kube-token_darwin_arm64 /usr/local/bin/kube-token
+```
+
+或者用 Go 自己编：
+
+```bash
+go install github.com/hongmengchen/kube-token@latest
+```
+
+## 使用
+
+```bash
+kube-token
+```
+
+| 按键 | 作用 |
+| --- | --- |
+| `↑` `↓` / `j` `k` | 选择 user |
+| `enter` | 进入输入页 / 下一步 / 应用 |
+| `ctrl+y` | 从剪贴板读取 token |
+| `r` | 重新扫描 kubeconfig |
+| `esc` | 返回上一页 |
+| `q` / `ctrl+c` | 退出 |
+
+非交互（适合脚本、新设备初始化）：
+
+```bash
+# 自动挑当前 context 的 user
+kube-token -set-token "$NEW_TOKEN"
+
+# 指定 user / 文件
+kube-token -set-token "$NEW_TOKEN" -user dev-sa -file ~/.kube/prod.yaml
+
+# 只看看扫到了什么
+kube-token -list
+```
+
+`-set-token` 的退出码：`0` 成功，`1` 写入失败，`2` 已写入但验证失败（会打印回滚命令）。
+
+## 它做了什么
+
+1. 扫描 kubeconfig，解析每个 user 的 token 和 JWT 过期时间
+2. 选中的条目：备份文件 → `kubectl config set-credentials <user> --token=<new>`
+3. 重新解析文件，确认 token 确实写进去了（不一致就报错）
+4. `kubectl --kubeconfig <file> get --raw /version` 验证认证：能拿到版本号就是通了；返回 `Forbidden` 也算认证成功（只是身份权限受限）
+5. 验证失败时保留备份，并在结果页给出回滚命令
+
+## 安全说明
+
+- token 只在内存和你本机的 kubeconfig 里，不联网、不上报、不写日志
+- 界面上只显示掩码（头 8 位 + 尾 4 位）
+- 文件写入交给 `kubectl`，它会把配置重写成标准格式；原文件完整备份在旁边的 `.bak.<时间戳>`
+- 备份文件权限 `0600`
+
+如果某个 user 用的是 `exec` 插件（例如 `aws eks get-token`），TUI 会在详情里标注「exec 自动续期」——这种 user 写死 token 可能和插件冲突，一般不需要用它。
+
+## 脚本版
+
+仓库里也留了一个零依赖的 bash 版本：`scripts/kube-token.sh`
+
+```bash
+./scripts/kube-token.sh
+```
+
+功能是 TUI 的子集：只更新当前 context 对应的 user，交互输入 token，自动备份并验证。适合不想装额外二进制、只要能跑一次的机器。
+
+## 开发
+
+```bash
+go test ./...
+go build -o kube-token .
+```
+
+打 tag 会触发 GitHub Actions 构建五个平台的二进制并发布到 Releases。
+
+## License
+
+MIT
