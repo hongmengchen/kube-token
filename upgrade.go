@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -137,13 +140,14 @@ func fetchLatestViaRedirect() (*releaseInfo, error) {
 	}
 
 	asset := assetName(runtime.GOOS, runtime.GOARCH)
+	download := "https://github.com/" + repoSlug + "/releases/download/" + tag + "/"
 	return &releaseInfo{
 		TagName: tag,
 		HTMLURL: "https://github.com/" + repoSlug + "/releases/tag/" + tag,
-		Assets: []releaseAsset{{
-			Name: asset,
-			URL:  "https://github.com/" + repoSlug + "/releases/download/" + tag + "/" + asset,
-		}},
+		Assets: []releaseAsset{
+			{Name: asset, URL: download + asset},
+			{Name: "checksums.txt", URL: download + "checksums.txt"},
+		},
 	}, nil
 }
 
@@ -191,6 +195,74 @@ func releaseAssetURL(rel *releaseInfo) (string, error) {
 	return "", fmt.Errorf("这个平台没有对应的二进制（%s），请到 %s 手动下载", asset, rel.HTMLURL)
 }
 
+// releaseChecksum 从 release 的 checksums.txt 里找出当前平台二进制的 SHA-256
+func releaseChecksum(rel *releaseInfo) (string, error) {
+	var url string
+	for _, a := range rel.Assets {
+		if a.Name == "checksums.txt" {
+			url = a.URL
+			break
+		}
+	}
+	if url == "" {
+		return "", fmt.Errorf("这个 release 没有 checksums.txt，无法校验下载（见 %s）", rel.HTMLURL)
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "kube-token/"+version)
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("下载 checksums.txt 失败: %s", resp.Status)
+	}
+
+	asset := assetName(runtime.GOOS, runtime.GOARCH)
+	want, err := findChecksum(resp.Body, asset)
+	if err != nil {
+		return "", fmt.Errorf("读 checksums.txt 失败: %w", err)
+	}
+	return want, nil
+}
+
+// findChecksum 解析 `sha256  filename` 格式，允许 sha256sum 的 `*filename` 变体
+func findChecksum(r io.Reader, asset string) (string, error) {
+	sc := bufio.NewScanner(r)
+	for sc.Scan() {
+		fields := strings.Fields(sc.Text())
+		if len(fields) == 2 && strings.TrimPrefix(fields[1], "*") == asset {
+			return strings.ToLower(fields[0]), nil
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return "", err
+	}
+	return "", fmt.Errorf("checksums.txt 里没有 %s", asset)
+}
+
+func verifyChecksum(file, want string) error {
+	f, err := os.Open(file)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return err
+	}
+	got := hex.EncodeToString(h.Sum(nil))
+	if got != want {
+		return fmt.Errorf("下载的文件校验不符（期望 %s，实际 %s）", want, got)
+	}
+	return nil
+}
+
 // currentExecutable 是当前正在运行的程序路径（跟到真实文件，别替换了软链接）
 func currentExecutable() (string, error) {
 	exe, err := os.Executable()
@@ -203,9 +275,13 @@ func currentExecutable() (string, error) {
 	return exe, nil
 }
 
-// applyRelease 下载当前平台的二进制并原子替换自身，顺带刷新已装的 agent skill
+// applyRelease 校验并安装 release 里当前平台的二进制，顺带刷新已装的 agent skill
 func applyRelease(rel *releaseInfo) (string, error) {
 	url, err := releaseAssetURL(rel)
+	if err != nil {
+		return "", err
+	}
+	want, err := releaseChecksum(rel)
 	if err != nil {
 		return "", err
 	}
@@ -213,7 +289,11 @@ func applyRelease(rel *releaseInfo) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := replaceBinary(exe, url); err != nil {
+	tmp, err := downloadVerified(url, want, filepath.Dir(exe), nil)
+	if err != nil {
+		return "", err
+	}
+	if err := installBinary(tmp, exe); err != nil {
 		return "", err
 	}
 	// 装过 agent skill 的话，让新二进制把它刷成配套版本
@@ -229,13 +309,17 @@ func assetName(goos, goarch string) string {
 	return name
 }
 
-// replaceBinary 下载到同目录的临时文件再原子替换，避免半截文件
-func replaceBinary(exe, url string) error {
-	tmp, err := downloadBinary(url, filepath.Dir(exe), nil)
+// downloadVerified 下载到 dir 下的临时文件，校验 SHA-256 后才返回
+func downloadVerified(url, want, dir string, onProgress func(done, total int64)) (string, error) {
+	tmp, err := downloadBinary(url, dir, onProgress)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return installBinary(tmp, exe)
+	if err := verifyChecksum(tmp, want); err != nil {
+		_ = os.Remove(tmp)
+		return "", err
+	}
+	return tmp, nil
 }
 
 // downloadBinary 下载到 dir 下的临时文件；onProgress 按写入量回调（可为 nil）

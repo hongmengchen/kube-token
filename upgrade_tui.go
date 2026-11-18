@@ -240,10 +240,14 @@ func (m *upgradeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *upgradeModel) downloadCmd() tea.Cmd {
-	url, dir, ch := m.url, filepath.Dir(m.exe), m.ch
+	url, dir, ch, rel := m.url, filepath.Dir(m.exe), m.ch, m.rel
 	return func() tea.Msg {
 		defer close(ch)
-		tmp, err := downloadBinary(url, dir, func(done, total int64) {
+		want, err := releaseChecksum(rel)
+		if err != nil {
+			return upgradeDownloadedMsg{err: err}
+		}
+		tmp, err := downloadVerified(url, want, dir, func(done, total int64) {
 			select {
 			case ch <- upgradeProgressMsg{done: done, total: total}:
 			default: // 界面来不及消费就丢掉这帧，别把下载卡住
@@ -275,7 +279,7 @@ func (m *upgradeModel) View() string {
 		b.WriteString("\n\n  " + styles.Dim.Render("当前 "+version))
 
 	case upDownloading:
-		title := "正在下载 " + m.rel.TagName
+		title := "正在下载并校验 " + m.rel.TagName
 		b.WriteString("  " + m.spin.View() + " " + styles.Text.Render(title))
 		b.WriteString("\n\n  " + m.bar.View())
 		b.WriteString("\n\n  " + styles.Dim.Render(m.progressText()))

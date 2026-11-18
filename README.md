@@ -1,14 +1,18 @@
 # kube-token
 
+[![CI](https://github.com/hongmengchen/kube-token/actions/workflows/ci.yml/badge.svg)](https://github.com/hongmengchen/kube-token/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/hongmengchen/kube-token)](https://github.com/hongmengchen/kube-token/releases)
+[![License](https://img.shields.io/github/license/hongmengchen/kube-token)](LICENSE)
+
 一个终端 TUI：粘贴一个新 token，直接替换 kubeconfig 里对应 user 的旧 token。界面样式来自共享的 [tui](https://github.com/hongmengchen/tui) 主题库。
 
 给 EKS / K8s 这类需要手动更新 `users[].user.token` 的场景用。启动、选 user、粘 token、回车，剩下的备份和验证都由它做。
 
 ```
-kube-token  选择要更新的 user
-  2 个 user · 2 个文件
+kube-token  v0.6.1  选择要更新的 user
+  2 个 user · 2 个文件 · 已是最新
 │ ~/.kube/config                                                    当前 context
-│ user     arn:aws-cn:eks:cn-northwest-1:660922615903:cluster/Sought
+│ user     arn:aws:eks:us-east-1:123456789012:cluster/example
 │ token    eyJhbGci…-llw  ·  剩 14m02s
 │ ~/.kube/prod.yaml
 │ user     dev-sa
@@ -25,7 +29,8 @@ kube-token  选择要更新的 user
 - **自动备份**：写入前存成 `config.bak.<时间戳>`，权限 `0600`
 - **写入后校验**：从文件回读确认 token 真的变了，再请求集群 `/version` 验证认证是否生效
 - **优先官方 kubectl**：有 `kubectl` 就用它写；没有时会问你要不要**一键安装官方 kubectl**（从 `dl.k8s.io` 下载并校验 sha256），不想装再用内置方式直接改 YAML——注释、键顺序、其它字段都会保留
-- **单二进制**：Go 编译，macOS / Linux / Windows 都能直接跑，不需要 Python、Node、kubectl 之类外部命令
+- **版本与自升级**：标题栏常显当前版本；启动时检查 GitHub 最新版，有新版时按 `U` 直接下载、校验 SHA-256 并替换自身
+- **单二进制**：Go 编译，macOS / Linux / Windows（amd64 / arm64）都能直接跑，不需要 Python、Node、kubectl 之类外部命令
 - **非交互模式**：`-set-token` 给脚本用，一条命令搞定
 - **自带 agent skill**：`kube-token skill` 把用法说明装进 `~/.claude/skills`（安装时也会问一次），内容和程序版本一致，升级时自动刷新
 
@@ -43,12 +48,14 @@ Windows PowerShell：
 irm https://raw.githubusercontent.com/hongmengchen/kube-token/main/install.ps1 | iex
 ```
 
-安装过程有和 `kube-token upgrade` 一样的动画：旋钮 → 下载进度条（百分比、已下载/总大小、速度）→ 校验 → 完成。输出被重定向（CI、日志）时自动退回逐行纯文本，也可以设 `NO_ANIMATION=1` 关掉。
+支持 macOS、Linux、Windows 的 amd64 / arm64，共 6 个单文件二进制；Windows ARM64 是原生构建。安装脚本会从 release 的 `checksums.txt` 校验 SHA-256。
+
+安装过程有和 `kube-token upgrade` 一样的动画：旋钮 → 下载进度条（百分比、已下载/总大小、速度）→ 校验 SHA-256 → 完成。输出被重定向（CI、日志）时自动退回逐行纯文本，也可以设 `NO_ANIMATION=1` 关掉。
 
 默认装到 `~/.local/bin`（root 下是 `/usr/local/bin`），如果该目录不在 `PATH` 里，脚本会打印需要追加的那一行。指定目录或版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hongmengchen/kube-token/main/install.sh | sh -s -- -b /usr/local/bin -v v0.1.0
+curl -fsSL https://raw.githubusercontent.com/hongmengchen/kube-token/main/install.sh | sh -s -- -b /usr/local/bin -v v0.6.1
 ```
 
 也可以手动从 [Releases](../../releases) 下载对应平台的二进制放进 `PATH`，或者用 Go 自己编：
@@ -178,11 +185,11 @@ kube-token upgrade --check  # 只检查，不下载
 kube-token upgrade --force  # 版本相同也重新安装
 ```
 
-它去 GitHub Releases 查最新 tag，和当前版本比对，然后下载对应平台的二进制，在可执行文件同目录写临时文件再原子替换，不会留下半截文件。安装目录需要提权时用 `sudo kube-token upgrade`。
+它去 GitHub Releases 查最新 tag，和当前版本比对，然后下载对应平台的二进制，先用 release 的 `checksums.txt` 校验 SHA-256，再在可执行文件同目录写临时文件、原子替换，不会留下半截文件；校验失败不会动原文件。安装目录需要提权时用 `sudo kube-token upgrade`。
 
 终端里运行会有一个升级动画：检查版本 → 下载进度条（大小、百分比、速度）→ 替换文件 → 完成。`--check`、管道、CI 这类非终端场景自动退回逐行纯文本，不会往日志里塞控制字符。
 
-TUI 标题栏始终显示当前版本（如 `kube-token v0.5.0`），启动时会顺手查最新版。有新版本时状态行显示 `最新 0.6.0，按 U 升级`，按 `U` 就在界面里下载并替换自身，完成后提示重开生效。
+TUI 标题栏始终显示当前版本（如 `kube-token v0.6.1`），启动时会顺手查最新版。有新版本时状态行显示 `最新 0.6.2，按 U 升级`，按 `U` 就在界面里下载、校验并替换自身，完成后提示重开生效。
 
 > 从 `v0.1.0` 升上来是第一次：那个版本还没有 `upgrade` 子命令，需要先用安装脚本重装一次，之后就能用 `kube-token upgrade` 了。
 
@@ -202,6 +209,7 @@ TUI 标题栏始终显示当前版本（如 `kube-token v0.5.0`），启动时�
 - 界面上只显示掩码（头 8 位 + 尾 4 位）
 - 文件写入优先交给 `kubectl`；没有它就原地改 YAML 节点（保留注释和其它字段），原文件完整备份在旁边的 `.bak.<时间戳>`
 - 备份文件权限 `0600`
+- 发布二进制带 `checksums.txt`，安装脚本、`kube-token upgrade` 和 hmck 都会校验 SHA-256
 - Vault 的公司内部地址、挂载点、角色、用户只写在本地配置里（`0600`），不进入程序、不进入仓库；仓库 `.gitignore` 也屏蔽了 `config.yaml`
 
 如果某个 user 用的是 `exec` 插件（例如 `aws eks get-token`），TUI 会在详情里标注「exec 自动续期」——这种 user 写死 token 可能和插件冲突，一般不需要用它。
@@ -225,11 +233,18 @@ kube-token skill -dir /path/to/skills   # 换个根目录
 ## 开发
 
 ```bash
+gofmt -l .
+go vet ./...
 go test ./...
 go build -o kube-token .
 ```
 
-打 tag 会触发 GitHub Actions 构建五个平台的二进制并发布到 Releases。
+push / PR 会跑 CI；打 tag 会触发 GitHub Actions 跑测试、构建六个平台的二进制、生成 `checksums.txt` 并发布到 Releases。
+
+## 参与
+
+- [CHANGELOG](CHANGELOG.md) · [CONTRIBUTING](CONTRIBUTING.md)
+- 安全问题请按 [SECURITY](SECURITY.md) 走私密报告，不要公开贴真实 token、kubeconfig 或公司内部地址
 
 ## License
 

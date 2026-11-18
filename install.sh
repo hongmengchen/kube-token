@@ -61,7 +61,7 @@ ESC=$(printf '\033')
 CUR_HIDE="${ESC}[?25l"
 CUR_SHOW="${ESC}[?25h"
 CLR_LINE="${ESC}[K"
-PURPLE="${ESC}[38;5;99m"
+ACCENT="${ESC}[38;5;109m"
 DIMC="${ESC}[2m"
 GREEN="${ESC}[32m"
 NC="${ESC}[0m"
@@ -125,10 +125,6 @@ case "$machine" in
   *) die "不支持的架构: $machine（可去 https://github.com/$REPO/releases 手动下载）" ;;
 esac
 
-if [ "$os" = "windows" ] && [ "$arch" = "arm64" ]; then
-  die "暂未提供 Windows ARM64 构建，可尝试 amd64 版本"
-fi
-
 # ---- 下载地址 ----
 if [ "$VERSION" = "latest" ]; then
   base="https://github.com/$REPO/releases/latest/download"
@@ -146,14 +142,7 @@ if [ -z "$BIN_DIR" ]; then
   elif [ "$(id -u)" = "0" ]; then
     BIN_DIR="/usr/local/bin"
   else
-    # 优先选一个「可写且已在 PATH 里」的目录，这样装完当前终端就能直接用
-    for d in "$HOME/.local/bin" "$HOME/bin" /usr/local/bin; do
-      if [ -d "$d" ] && [ -w "$d" ] && in_path "$d"; then
-        BIN_DIR="$d"
-        break
-      fi
-    done
-    [ -n "$BIN_DIR" ] || BIN_DIR="$HOME/.local/bin"
+    BIN_DIR="$HOME/.local/bin"
   fi
 fi
 mkdir -p "$BIN_DIR" 2>/dev/null || die "无法创建目录 $BIN_DIR"
@@ -167,9 +156,18 @@ if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
   die "需要 curl 或 wget"
 fi
 
+fetch() {
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL --retry 3 --connect-timeout 15 -o "$2" "$1"
+  else
+    wget -q -O "$2" "$1"
+  fi
+}
+
 tmp=$(mktemp "${TMPDIR:-/tmp}/kube-token.XXXXXX") || die "无法创建临时文件"
 rcfile="${tmp}.rc"
-trap 'rm -f "$tmp" "$rcfile"' EXIT INT TERM
+sums="${tmp}.sha256"
+trap 'rm -f "$tmp" "$rcfile" "$sums"' EXIT INT TERM
 
 dim "系统: ${os}/${arch}  版本: ${VERSION}"
 dim "下载: ${url}"
@@ -208,7 +206,7 @@ download_bg() {
 }
 
 if [ "$ANIM" = 1 ]; then
-  trap 'printf "%s" "$CUR_SHOW"; rm -f "$tmp" "$rcfile"' EXIT INT TERM
+  trap 'printf "%s" "$CUR_SHOW"; rm -f "$tmp" "$rcfile" "$sums"' EXIT INT TERM
   printf '%s' "$CUR_HIDE"
 
   download_bg
@@ -228,11 +226,11 @@ if [ "$ANIM" = 1 ]; then
     stats=$(fmt_stats "$size" "$total" "$speed")
     if [ "$total" -gt 0 ]; then
       printf '\r%s  %s%s%s 正在下载 %s  %s%s%s  %s%s%s' \
-        "$CLR_LINE" "$PURPLE" "$(spin_frame "$i")" "$NC" "$tag" \
-        "$PURPLE" "$(draw_bar "$size" "$total" 22)" "$NC" "$DIMC" "$stats" "$NC"
+        "$CLR_LINE" "$ACCENT" "$(spin_frame "$i")" "$NC" "$tag" \
+        "$ACCENT" "$(draw_bar "$size" "$total" 22)" "$NC" "$DIMC" "$stats" "$NC"
     else
       printf '\r%s  %s%s%s 正在下载 %s  %s%s%s' \
-        "$CLR_LINE" "$PURPLE" "$(spin_frame "$i")" "$NC" "$tag" "$DIMC" "$stats" "$NC"
+        "$CLR_LINE" "$ACCENT" "$(spin_frame "$i")" "$NC" "$tag" "$DIMC" "$stats" "$NC"
     fi
     sleep 0.2
     i=$((i + 1))
@@ -262,9 +260,39 @@ else
   [ "$size" -gt 100000 ] || die "下载的文件只有 ${size} 字节，可能不是二进制（版本 $VERSION 存在吗？）"
 fi
 
+# ---- 校验 SHA-256（release 带 checksums.txt 就强制校验）----
+if [ "$ANIM" = 1 ]; then
+  printf '\r%s  %s%s%s 正在校验 %s' "$CLR_LINE" "$ACCENT" "$(spin_frame 4)" "$NC" "$tag"
+fi
+if fetch "$base/checksums.txt" "$sums" 2>/dev/null; then
+  want=$(awk -v f="$asset" '$2==f {print $1; exit}' "$sums")
+  [ -n "$want" ] || die "checksums.txt 里没有 $asset"
+  if command -v sha256sum >/dev/null 2>&1; then
+    got=$(sha256sum "$tmp" | awk '{print $1}')
+  elif command -v shasum >/dev/null 2>&1; then
+    got=$(shasum -a 256 "$tmp" | awk '{print $1}')
+  else
+    die "需要 sha256sum 或 shasum 来校验下载"
+  fi
+  if [ "$got" != "$want" ]; then
+    printf '\r%s' "$CLR_LINE"
+    die "校验失败：下载到的文件与 checksums.txt 不一致"
+  fi
+  rm -f "$sums"
+  if [ "$ANIM" = 1 ]; then
+    printf '\r%s  %s✓%s 校验通过\n' "$CLR_LINE" "$GREEN" "$NC"
+  else
+    dim "校验通过: SHA-256"
+  fi
+else
+  rm -f "$sums"
+  if [ "$ANIM" = 1 ]; then printf '\r%s' "$CLR_LINE"; fi
+  dim "这个版本没有 checksums.txt，跳过校验"
+fi
+
 # ---- 安装 ----
 if [ "$ANIM" = 1 ]; then
-  printf '  %s%s%s 正在安装到 %s%s%s' "$PURPLE" "$(spin_frame 0)" "$NC" "$DIMC" "$BIN_DIR" "$NC"
+  printf '  %s%s%s 正在安装到 %s%s%s' "$ACCENT" "$(spin_frame 0)" "$NC" "$DIMC" "$BIN_DIR" "$NC"
 fi
 if ! mv "$tmp" "$target" 2>/dev/null; then
   printf '\r%s' "$CLR_LINE"
