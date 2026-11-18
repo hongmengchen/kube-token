@@ -99,16 +99,6 @@ kube-token -list
 
 如果某个 user 用的是 `exec` 插件（例如 `aws eks get-token`），TUI 会在详情里标注「exec 自动续期」——这种 user 写死 token 可能和插件冲突，一般不需要用它。
 
-## 脚本版
-
-仓库里也留了一个零依赖的 bash 版本：`scripts/kube-token.sh`
-
-```bash
-./scripts/kube-token.sh
-```
-
-功能是 TUI 的子集：只更新当前 context 对应的 user，交互输入 token，自动备份并验证。适合不想装额外二进制、只要能跑一次的机器。
-
 ## 开发
 
 ```bash
