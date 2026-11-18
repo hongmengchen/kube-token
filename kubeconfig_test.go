@@ -150,3 +150,22 @@ func TestApplyToken(t *testing.T) {
 		t.Fatal("写入不应影响其它 user")
 	}
 }
+
+func TestIsNewer(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"0.2.0", "0.1.9", true},
+		{"0.1.0", "0.1.0", false},
+		{"v0.1.0", "0.0.9", true},
+		{"0.1.10", "0.1.9", true},
+		{"1.0.0", "0.9.9", true},
+		{"0.9.9", "1.0.0", false},
+	}
+	for _, c := range cases {
+		if got := isNewer(c.a, c.b); got != c.want {
+			t.Errorf("isNewer(%q, %q) = %v, 期望 %v", c.a, c.b, got, c.want)
+		}
+	}
+}

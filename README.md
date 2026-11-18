@@ -82,6 +82,18 @@ kube-token -list
 
 `-set-token` 的退出码：`0` 成功，`1` 写入失败，`2` 已写入但验证失败（会打印回滚命令）。
 
+## 更新
+
+```bash
+kube-token upgrade          # 更新到最新版本
+kube-token upgrade --check  # 只检查，不下载
+kube-token upgrade --force  # 版本相同也重新安装
+```
+
+它去 GitHub Releases 查最新 tag，和当前版本比对，然后下载对应平台的二进制，在可执行文件同目录写临时文件再原子替换，不会留下半截文件。安装目录需要提权时用 `sudo kube-token upgrade`。
+
+> 从 `v0.1.0` 升上来是第一次：那个版本还没有 `upgrade` 子命令，需要先用安装脚本重装一次，之后就能用 `kube-token upgrade` 了。
+
 ## 它做了什么
 
 1. 扫描 kubeconfig，解析每个 user 的 token 和 JWT 过期时间

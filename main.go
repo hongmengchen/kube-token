@@ -11,9 +11,46 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-var version = "0.1.0"
+var version = "0.2.0"
+
+func usage() {
+	fmt.Fprintf(os.Stderr, `kube-token %s — 粘贴新 token 直接替换 kubeconfig 里的旧值
+
+用法:
+  kube-token                        打开 TUI
+  kube-token list                   列出扫描到的 user（同 -list）
+  kube-token upgrade [--check]      更新到最新版本
+  kube-token version                打印版本
+
+选项:
+  -list                 列出扫描到的 user 后退出
+  -set-token <token>    非交互模式：直接替换成这个 token
+  -user <name>          配合 -set-token：指定 user
+  -file <path>          配合 -set-token：指定 kubeconfig 文件
+  -no-verify            替换后不验证集群连通性
+
+`, version)
+}
 
 func main() {
+	// 子命令
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "upgrade", "update":
+			os.Exit(runUpgrade(os.Args[2:]))
+		case "version":
+			fmt.Printf("kube-token %s\n", version)
+			return
+		case "list":
+			entries, errs := scanEntries()
+			printList(entries, errs)
+			return
+		case "help":
+			usage()
+			return
+		}
+	}
+
 	var (
 		listFlag = flag.Bool("list", false, "列出扫描到的 kubeconfig 条目后退出")
 		setToken = flag.String("set-token", "", "非交互模式：直接替换成这个 token")
@@ -22,6 +59,7 @@ func main() {
 		noVerify = flag.Bool("no-verify", false, "替换后不验证集群连通性")
 		verFlag  = flag.Bool("version", false, "打印版本后退出")
 	)
+	flag.Usage = usage
 	flag.Parse()
 
 	if *verFlag {
