@@ -77,37 +77,20 @@ func runUpgradePlain(force, check bool) int {
 		return 0
 	}
 
-	asset := assetName(runtime.GOOS, runtime.GOARCH)
-	url := ""
-	for _, a := range rel.Assets {
-		if a.Name == asset {
-			url = a.URL
-			break
-		}
-	}
-	if url == "" {
-		fmt.Fprintf(os.Stderr, "这个平台没有对应的二进制（%s），请到 %s 手动下载\n", asset, rel.HTMLURL)
-		return 1
-	}
-
-	exe, err := os.Executable()
+	url, err := releaseAssetURL(rel)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "找不到当前可执行文件: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
 	}
-	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = resolved
-	}
-
 	fmt.Printf("下载: %s\n", url)
-	if err := replaceBinary(exe, url); err != nil {
+
+	exe, err := applyRelease(rel)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "更新失败: %v\n", err)
 		return 1
 	}
 
 	fmt.Printf("已更新到 %s（%s）\n", rel.TagName, exe)
-	// 装过 agent skill 的话，让新二进制把它刷成配套版本
-	refreshSkillAfterUpgrade(exe)
 	if runtime.GOOS == "windows" {
 		fmt.Println("新开的终端会使用新版本；当前窗口里的命令需要重开或重新安装。")
 	}
@@ -195,6 +178,47 @@ func fetchLatestViaAPI() (*releaseInfo, error) {
 		return nil, errors.New("没有解析到版本号")
 	}
 	return &rel, nil
+}
+
+// releaseAssetURL 找出当前平台对应二进制的下载地址
+func releaseAssetURL(rel *releaseInfo) (string, error) {
+	asset := assetName(runtime.GOOS, runtime.GOARCH)
+	for _, a := range rel.Assets {
+		if a.Name == asset {
+			return a.URL, nil
+		}
+	}
+	return "", fmt.Errorf("这个平台没有对应的二进制（%s），请到 %s 手动下载", asset, rel.HTMLURL)
+}
+
+// currentExecutable 是当前正在运行的程序路径（跟到真实文件，别替换了软链接）
+func currentExecutable() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("找不到当前可执行文件: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	return exe, nil
+}
+
+// applyRelease 下载当前平台的二进制并原子替换自身，顺带刷新已装的 agent skill
+func applyRelease(rel *releaseInfo) (string, error) {
+	url, err := releaseAssetURL(rel)
+	if err != nil {
+		return "", err
+	}
+	exe, err := currentExecutable()
+	if err != nil {
+		return "", err
+	}
+	if err := replaceBinary(exe, url); err != nil {
+		return "", err
+	}
+	// 装过 agent skill 的话，让新二进制把它刷成配套版本
+	refreshSkillAfterUpgrade(exe)
+	return exe, nil
 }
 
 func assetName(goos, goarch string) string {

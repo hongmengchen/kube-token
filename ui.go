@@ -75,6 +75,11 @@ type model struct {
 	kcLastBytes int64
 	kcLastTime  time.Time
 
+	// 自身版本检查与升级
+	latest    string
+	checkErr  string
+	updatedTo string
+
 	spin spinner.Model
 }
 
@@ -115,6 +120,17 @@ type kubectlVersionMsg struct {
 	version string
 }
 
+type versionCheckMsg struct {
+	latest string
+	err    error
+}
+
+type selfUpdateDoneMsg struct {
+	version string
+	changed bool
+	err     error
+}
+
 func newModel(entries []Entry, scanErrs []error) model {
 	ti := textinput.New()
 	ti.Placeholder = "粘贴 token"
@@ -143,7 +159,39 @@ func newModel(entries []Entry, scanErrs []error) model {
 	return m
 }
 
-func (m model) Init() tea.Cmd { return nil }
+func (m model) Init() tea.Cmd { return checkVersionCmd() }
+
+func checkVersionCmd() tea.Cmd {
+	return func() tea.Msg {
+		rel, err := fetchLatestRelease()
+		if err != nil {
+			return versionCheckMsg{err: err}
+		}
+		return versionCheckMsg{latest: rel.TagName}
+	}
+}
+
+func (m model) canUpdate() bool {
+	return m.updatedTo == "" && m.latest != "" && isNewer(m.latest, version)
+}
+
+// selfUpdateCmd 下载并替换当前可执行文件；替换后要重开程序才会用上新版本
+func selfUpdateCmd() tea.Cmd {
+	return func() tea.Msg {
+		rel, err := fetchLatestRelease()
+		if err != nil {
+			return selfUpdateDoneMsg{err: err}
+		}
+		latest := strings.TrimPrefix(rel.TagName, "v")
+		if !isNewer(latest, version) {
+			return selfUpdateDoneMsg{version: latest}
+		}
+		if _, err := applyRelease(rel); err != nil {
+			return selfUpdateDoneMsg{err: err}
+		}
+		return selfUpdateDoneMsg{version: latest, changed: true}
+	}
+}
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -156,6 +204,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.spin, cmd = m.spin.Update(msg)
 		return m, cmd
+
+	case versionCheckMsg:
+		if msg.err != nil {
+			m.checkErr = msg.err.Error()
+		} else {
+			m.latest = strings.TrimPrefix(msg.latest, "v")
+		}
+		return m, nil
+
+	case selfUpdateDoneMsg:
+		m.state = viewList
+		if msg.err != nil {
+			m.note = "更新失败: " + msg.err.Error()
+			return m, nil
+		}
+		m.latest = msg.version
+		if msg.changed {
+			m.updatedTo = msg.version
+			m.note = ""
+		} else {
+			m.note = "已经是最新版本"
+		}
+		return m, nil
 
 	case kubectlVersionMsg:
 		if msg.gen != m.kcGen {
@@ -292,6 +363,13 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.openConfigForm()
 			m.state = viewConfig
 			return m, textinput.Blink
+		case "U":
+			if m.canUpdate() {
+				m.note = ""
+				m.state = viewWorking
+				m.workText = "正在更新到 " + m.latest + "…"
+				return m, tea.Batch(m.spin.Tick, selfUpdateCmd())
+			}
 		case "q", "esc":
 			return m, tea.Quit
 		}
@@ -708,13 +786,14 @@ func (m model) View() string {
 
 func (m model) viewList() string {
 	var b strings.Builder
-	b.WriteString(styles.Title.Render("kube-token") + styles.Dim.Render("  选择要更新的 user"))
+	b.WriteString(styles.Title.Render("kube-token") + styles.Dim.Render("  v"+version+"  选择要更新的 user"))
 	b.WriteString("\n")
 	if len(m.entries) > 0 {
 		b.WriteString(styles.Dim.Render(fmt.Sprintf("  %d 个 user · %d 个文件", len(m.entries), countFiles(m.entries))))
 	} else {
 		b.WriteString(styles.Dim.Render("  没有发现可用的 kubeconfig"))
 	}
+	b.WriteString(m.updateStatus())
 	b.WriteString("\n\n")
 
 	for i, e := range m.entries {
@@ -731,8 +810,29 @@ func (m model) viewList() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(styles.Hints("↑↓", "选择", "enter", "手动粘贴", "v", "从 Vault 获取", "c", "配置", "q", "退出"))
+	hints := []string{"↑↓", "选择", "enter", "手动粘贴", "v", "从 Vault 获取", "c", "配置"}
+	if m.canUpdate() {
+		hints = append(hints, "U", "升级")
+	}
+	hints = append(hints, "q", "退出")
+	b.WriteString(styles.Hints(hints...))
 	return b.String()
+}
+
+// updateStatus 显示当前版本之外的一小段状态：检查中 / 已是最新 / 可升级 / 已升级
+func (m model) updateStatus() string {
+	switch {
+	case m.updatedTo != "":
+		return styles.Good.Render("  ·  已更新到 " + m.updatedTo + "，重开生效")
+	case m.canUpdate():
+		return styles.Warn.Render("  ·  最新 " + m.latest + "，按 U 升级")
+	case m.latest != "":
+		return styles.Dim.Render("  ·  已是最新")
+	case m.checkErr != "":
+		return styles.Dim.Render("  ·  检查更新失败")
+	default:
+		return styles.Dim.Render("  ·  检查更新中…")
+	}
 }
 
 func (m model) renderCard(e Entry, selected bool) string {

@@ -81,7 +81,7 @@ func runUpgradeTUI(force bool) int {
 
 	m := &upgradeModel{
 		spin:     sp,
-		bar:      progress.New(progress.WithGradient("#6D28D9", "#A78BFA"), progress.WithoutPercentage()),
+		bar:      progress.New(progress.WithSolidFill("#94A3B8"), progress.WithoutPercentage()),
 		phase:    upChecking,
 		force:    force,
 		exe:      exe,

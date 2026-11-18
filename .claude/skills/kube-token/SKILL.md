@@ -150,8 +150,11 @@ kube-token version
   grep -rniE "<公司关键词1>|<公司关键词2>|<内部域名>" --include='*.go' --include='*.md' --include='*.sh' --include='*.ps1' .
   ```
 
-- 用户可见文案是中文；TUI 的样式集中在 `ui.go`（颜色 `cAccent` 等），升级动画在
-  `upgrade_tui.go`，一键装 kubectl 的动画在 `ui.go` 的 `viewKcInstall`。
+- 用户可见文案是中文；TUI 样式来自共享主题库 `github.com/hongmengchen/tui/theme`
+  （`ui.go` 里的 `var styles = theme.Default`），升级动画在 `upgrade_tui.go`，
+  一键装 kubectl 的动画在 `ui.go` 的 `viewKcInstall`。
+- TUI 列表页启动时会异步查最新版，标题显示当前版本；有新版时按 `U` 走和
+  `kube-token upgrade` 相同的下载/替换流程（`applyRelease`）。
 - 涉及 YAML 写入的改动，保留原有测试（`kubeconfig_test.go` 里
   `TestApplyTokenNative*`、`TestVerifyClusterNative*` 覆盖无 kubectl 的路径）。
 
