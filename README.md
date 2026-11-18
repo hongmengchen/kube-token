@@ -203,6 +203,10 @@ kube-token upgrade --force  # 版本相同也重新安装
 
 如果某个 user 用的是 `exec` 插件（例如 `aws eks get-token`），TUI 会在详情里标注「exec 自动续期」——这种 user 写死 token 可能和插件冲突，一般不需要用它。
 
+## 给 agent 用
+
+仓库里带了一个 Claude Code / 兼容 agent skill：[`.claude/skills/kube-token/SKILL.md`](.claude/skills/kube-token/SKILL.md)。它写清了 agent 该走的非交互路径（`list` → 取 token → `-set-token` → 读退出码）、回滚方式，以及「不回显 token、不提交 kubeconfig、不猜 user」这几条硬约束。CLI 相关的用法和人读的是同一套，TUI 只留给人。
+
 ## 开发
 
 ```bash
