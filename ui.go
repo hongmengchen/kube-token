@@ -5,7 +5,9 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -24,6 +26,7 @@ const (
 	viewConfig
 	viewMessage
 	viewKubectl
+	viewKcInstall
 )
 
 var (
@@ -79,6 +82,19 @@ type model struct {
 	kubectlPath string
 	method      string
 
+	// 一键安装官方 kubectl 的动画（和 upgrade 一致）
+	kcBar       progress.Model
+	kcCh        chan tea.Msg
+	kcGen       int
+	kcDir       string
+	kcVersion   string
+	kcPhase     kcPhase
+	kcDone      int64
+	kcTotal     int64
+	kcSpeed     float64
+	kcLastBytes int64
+	kcLastTime  time.Time
+
 	spin spinner.Model
 }
 
@@ -97,6 +113,26 @@ type vaultDoneMsg struct {
 type kubectlInstalledMsg struct {
 	path string
 	err  error
+}
+
+type kcPhase int
+
+const (
+	kcDownloading kcPhase = iota
+	kcInstalling
+)
+
+// 带 gen：每次重新安装换一代，避免上一次残留的通道消息串进新的动画
+type kubectlProgressMsg struct {
+	gen         int
+	done, total int64
+}
+
+type kubectlProgressClosedMsg struct{ gen int }
+
+type kubectlVersionMsg struct {
+	gen     int
+	version string
 }
 
 func newModel(entries []Entry, scanErrs []error) model {
@@ -133,7 +169,50 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m.resizeKcBar()
 		return m, nil
+
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		return m, cmd
+
+	case kubectlVersionMsg:
+		if msg.gen != m.kcGen {
+			return m, nil
+		}
+		m.kcVersion = msg.version
+		// 收到一条就要继续等下一帧，否则进度消息全堵在通道里
+		return m, m.kcWaitProgress()
+
+	case kubectlProgressMsg:
+		m.kcDone, m.kcTotal = msg.done, msg.total
+		now := time.Now()
+		if d := now.Sub(m.kcLastTime).Seconds(); d >= 0.2 {
+			m.kcSpeed = float64(m.kcDone-m.kcLastBytes) / d
+			m.kcLastBytes, m.kcLastTime = m.kcDone, now
+		}
+		next := m.kcWaitProgress()
+		if m.kcTotal > 0 {
+			return m, tea.Batch(m.kcBar.SetPercent(float64(m.kcDone)/float64(m.kcTotal)), next)
+		}
+		return m, next
+
+	case kubectlProgressClosedMsg:
+		if msg.gen == m.kcGen && m.state == viewKcInstall {
+			m.kcPhase = kcInstalling
+		}
+		return m, nil
+
+	case progress.FrameMsg:
+		if m.state != viewKcInstall {
+			return m, nil
+		}
+		barModel, cmd := m.kcBar.Update(msg)
+		if b, ok := barModel.(progress.Model); ok {
+			m.kcBar = b
+		}
+		return m, cmd
 
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
@@ -354,12 +433,7 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = viewConfirm
 			return m, nil
 		case "enter":
-			m.state = viewWorking
-			m.workText = "正在下载并安装官方 kubectl…"
-			return m, tea.Batch(m.spin.Tick, func() tea.Msg {
-				path, err := installKubectl("")
-				return kubectlInstalledMsg{path: path, err: err}
-			})
+			return m.startKubectlInstall()
 		case "n":
 			m.kubectlPath = ""
 			m.method = "内置（未装 kubectl）"
@@ -554,6 +628,66 @@ func applyCmd(e Entry, token, kubectlPath string) tea.Cmd {
 	}
 }
 
+// ---------- 一键安装官方 kubectl（动画和 upgrade 一致） ----------
+
+func (m *model) startKubectlInstall() (tea.Model, tea.Cmd) {
+	m.kcBar = progress.New(progress.WithGradient("#6D28D9", "#A78BFA"), progress.WithoutPercentage())
+	m.resizeKcBar()
+	m.state = viewKcInstall
+	m.kcPhase = kcDownloading
+	m.kcVersion = ""
+	m.kcDir = ""
+	if d, err := kubectlInstallDir(); err == nil {
+		m.kcDir = d
+	}
+	m.kcDone, m.kcTotal, m.kcSpeed, m.kcLastBytes = 0, 0, 0, 0
+	m.kcLastTime = time.Now()
+	m.kcGen++
+	m.kcCh = make(chan tea.Msg, 128)
+	return m, tea.Batch(m.spin.Tick, m.kcInstallCmd(), m.kcWaitProgress())
+}
+
+func (m *model) resizeKcBar() {
+	w := m.width - 20
+	if w > 44 {
+		w = 44
+	}
+	if w < 12 {
+		w = 12
+	}
+	m.kcBar.Width = w
+}
+
+func (m *model) kcInstallCmd() tea.Cmd {
+	ch, gen := m.kcCh, m.kcGen
+	return func() tea.Msg {
+		defer close(ch)
+		send := func(msg tea.Msg) {
+			select {
+			case ch <- msg:
+			default: // 界面来不及消费就丢掉这帧，别把下载卡住
+			}
+		}
+		path, err := installKubectlWith("", func(v string) {
+			send(kubectlVersionMsg{gen: gen, version: v})
+		}, func(done, total int64) {
+			send(kubectlProgressMsg{gen: gen, done: done, total: total})
+		})
+		return kubectlInstalledMsg{path: path, err: err}
+	}
+}
+
+func (m *model) kcWaitProgress() tea.Cmd {
+	ch, gen := m.kcCh, m.kcGen
+	return func() tea.Msg {
+		msg, ok := <-ch
+		if !ok {
+			return kubectlProgressClosedMsg{gen: gen}
+		}
+		return msg
+	}
+}
+
 func (m *model) clampCursor() {
 	if m.cursor >= len(m.entries) {
 		m.cursor = len(m.entries) - 1
@@ -586,6 +720,8 @@ func (m model) View() string {
 		body = m.viewMessage()
 	case viewKubectl:
 		body = m.viewKubectl()
+	case viewKcInstall:
+		body = m.viewKcInstall()
 	}
 	return "\n" + body + "\n"
 }
@@ -798,6 +934,50 @@ func (m model) viewKubectl() string {
 	}
 	b.WriteString(hints("enter", "一键安装官方 kubectl", "n", "不安装，用内置方式", "esc", "返回"))
 	return b.String()
+}
+
+// viewKcInstall 和 `kube-token upgrade` 用同一套动画：spinner + 渐变进度条 + 大小/速度
+func (m model) viewKcInstall() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("kube-token") + dimStyle.Render("  安装官方 kubectl"))
+	b.WriteString("\n\n")
+
+	switch m.kcPhase {
+	case kcInstalling:
+		b.WriteString("  " + m.spin.View() + " " + textStyle.Render("正在校验并安装…"))
+		b.WriteString("\n\n  " + m.kcBar.View())
+		b.WriteString("\n\n  " + dimStyle.Render(m.kcProgressText()))
+	default:
+		title := "正在下载官方 kubectl"
+		if m.kcVersion != "" {
+			title += " " + m.kcVersion
+		}
+		b.WriteString("  " + m.spin.View() + " " + textStyle.Render(title))
+		if m.kcTotal > 0 {
+			b.WriteString("\n\n  " + m.kcBar.View())
+			b.WriteString("\n\n  " + dimStyle.Render(m.kcProgressText()))
+		} else {
+			b.WriteString("\n\n  " + dimStyle.Render("正在连接 dl.k8s.io…"))
+		}
+	}
+
+	if m.kcDir != "" {
+		b.WriteString("\n\n  " + dimStyle.Render("装到 "+shortenHome(m.kcDir)))
+	}
+	return b.String()
+}
+
+func (m model) kcProgressText() string {
+	mb := func(n int64) string { return fmt.Sprintf("%.1f MB", float64(n)/(1<<20)) }
+	speed := ""
+	if m.kcSpeed > 0 {
+		speed = fmt.Sprintf("  %s/s", mb(int64(m.kcSpeed)))
+	}
+	if m.kcTotal > 0 {
+		pct := 100 * float64(m.kcDone) / float64(m.kcTotal)
+		return fmt.Sprintf("%5.1f%%  %s / %s%s", pct, mb(m.kcDone), mb(m.kcTotal), speed)
+	}
+	return mb(m.kcDone) + speed
 }
 
 func (m model) viewMessage() string {

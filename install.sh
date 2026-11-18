@@ -24,6 +24,7 @@ usage() {
 
 环境变量：
   INSTALL_DIR          同 --bindir
+  NO_ANIMATION=1       不播放安装动画（管道、CI 里会自动关闭）
 EOF
 }
 
@@ -48,6 +49,64 @@ red()   { printf '\033[31m%s\033[0m\n' "$*" >&2; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
 dim()   { printf '\033[2m%s\033[0m\n' "$*"; }
 die()   { red "错误: $*"; exit 1; }
+
+# ---- 动画：和 `kube-token upgrade` 同一套观感（spinner + 进度条 + 大小/速度） ----
+# 只在终端里播放；管道、CI、TERM=dumb、NO_ANIMATION=1 时退回逐行纯文本。
+ANIM=0
+if [ -t 1 ] && [ -z "${NO_ANIMATION:-}" ] && [ -n "${TERM:-}" ] && [ "$TERM" != "dumb" ]; then
+  ANIM=1
+fi
+ESC=$(printf '\033')
+CUR_HIDE="${ESC}[?25l"
+CUR_SHOW="${ESC}[?25h"
+CLR_LINE="${ESC}[K"
+PURPLE="${ESC}[38;5;99m"
+DIMC="${ESC}[2m"
+GREEN="${ESC}[32m"
+NC="${ESC}[0m"
+
+# spin_frame <序号>：输出一个 braille 旋钮帧
+spin_frame() {
+  _n=$1
+  set -- ⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏
+  shift $((_n % 10))
+  printf '%s' "$1"
+}
+
+fmt_size() { # 字节 -> "7.4 MB" / "820 KB"
+  awk -v n="$1" 'BEGIN{
+    if (n >= 1048576) printf "%.1f MB", n/1048576;
+    else if (n >= 1024) printf "%.0f KB", n/1024;
+    else printf "%d B", n
+  }'
+}
+
+fmt_stats() { # done total speed -> " 45.3%  3.4/7.4 MB  1.2 MB/s"
+  awk -v d="$1" -v t="$2" -v s="$3" 'BEGIN{
+    mb = 1048576;
+    line = "";
+    if (t > 0) line = line sprintf("%5.1f%%  %.1f/%.1f MB", 100*d/t, d/mb, t/mb);
+    else       line = line sprintf("%.1f MB", d/mb);
+    if (s > 0) line = line sprintf("  %.1f MB/s", s/mb);
+    printf "%s", line
+  }'
+}
+
+draw_bar() { # done total width -> █████░░░░░
+  _filled=$(awk -v d="$1" -v t="$2" -v w="$3" 'BEGIN{
+    if (t <= 0) { print 0; exit }
+    n = int(d * w / t);
+    if (n > w) n = w;
+    print n
+  }')
+  _out=""
+  _i=0
+  while [ "$_i" -lt "$3" ]; do
+    if [ "$_i" -lt "$_filled" ]; then _out="${_out}█"; else _out="${_out}░"; fi
+    _i=$((_i + 1))
+  done
+  printf '%s' "$_out"
+}
 
 # ---- 系统 / 架构 ----
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -103,28 +162,122 @@ target="$BIN_DIR/$BIN"
 [ "$os" = "windows" ] && target="${target}.exe"
 
 # ---- 下载 ----
-tmp=$(mktemp "${TMPDIR:-/tmp}/kube-token.XXXXXX") || die "无法创建临时文件"
-trap 'rm -f "$tmp"' EXIT INT TERM
-
-dim "系统: ${os}/${arch}  版本: ${VERSION}"
-dim "下载: ${url}"
-if command -v curl >/dev/null 2>&1; then
-  curl -fsSL --retry 3 --connect-timeout 15 "$url" -o "$tmp" || die "下载失败（网络问题？可手动去 releases 页面下载）"
-elif command -v wget >/dev/null 2>&1; then
-  wget -q -O "$tmp" "$url" || die "下载失败（网络问题？可手动去 releases 页面下载）"
-else
+if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
   die "需要 curl 或 wget"
 fi
 
-size=$(wc -c <"$tmp" | tr -d ' ')
-[ "$size" -gt 100000 ] || die "下载的文件只有 ${size} 字节，可能不是二进制（版本 $VERSION 存在吗？）"
+tmp=$(mktemp "${TMPDIR:-/tmp}/kube-token.XXXXXX") || die "无法创建临时文件"
+rcfile="${tmp}.rc"
+trap 'rm -f "$tmp" "$rcfile"' EXIT INT TERM
+
+dim "系统: ${os}/${arch}  版本: ${VERSION}"
+dim "下载: ${url}"
+
+# 先问一下大小和标签，进度条和「正在下载 vX」才有数据（拿不到也不影响安装）
+total=0
+tag="$VERSION"
+if command -v curl >/dev/null 2>&1; then
+  hdrs=$(curl -fsSIL --connect-timeout 15 "$url" 2>/dev/null || true)
+  if [ -n "$hdrs" ]; then
+    total=$(printf '%s\n' "$hdrs" | tr -d '\r' | awk 'tolower($1)=="content-length:"{n=$2} END{print (n==""?0:n)}')
+    loc=$(printf '%s\n' "$hdrs" | tr -d '\r' | awk 'tolower($1)=="location:"{n=$2} END{print n}')
+    case "$loc" in
+      */download/*)
+        tag=${loc#*/download/}
+        tag=${tag%%/*}
+        ;;
+    esac
+  fi
+fi
+[ -n "$total" ] || total=0
+[ -n "$tag" ] || tag="$VERSION"
+
+# 后台下载，结束时把退出码写进 $rcfile（用它判断完成，比 kill -0 可靠）
+download_bg() {
+  (
+    set +e
+    if command -v curl >/dev/null 2>&1; then
+      curl -fsSL --retry 3 --connect-timeout 15 "$url" -o "$tmp"
+    else
+      wget -q -O "$tmp" "$url"
+    fi
+    printf '%s' "$?" >"$rcfile"
+  ) &
+  dlpid=$!
+}
+
+if [ "$ANIM" = 1 ]; then
+  trap 'printf "%s" "$CUR_SHOW"; rm -f "$tmp" "$rcfile"' EXIT INT TERM
+  printf '%s' "$CUR_HIDE"
+
+  download_bg
+  tprev=$(date +%s)
+  bprev=0
+  speed=0
+  i=0
+  while [ ! -f "$rcfile" ]; do
+    size=$(wc -c <"$tmp" 2>/dev/null | tr -d ' ')
+    [ -n "$size" ] || size=0
+    now=$(date +%s)
+    if [ "$now" -gt "$tprev" ]; then
+      speed=$(( (size - bprev) / (now - tprev) ))
+      tprev=$now
+      bprev=$size
+    fi
+    stats=$(fmt_stats "$size" "$total" "$speed")
+    if [ "$total" -gt 0 ]; then
+      printf '\r%s  %s%s%s 正在下载 %s  %s%s%s  %s%s%s' \
+        "$CLR_LINE" "$PURPLE" "$(spin_frame "$i")" "$NC" "$tag" \
+        "$PURPLE" "$(draw_bar "$size" "$total" 22)" "$NC" "$DIMC" "$stats" "$NC"
+    else
+      printf '\r%s  %s%s%s 正在下载 %s  %s%s%s' \
+        "$CLR_LINE" "$PURPLE" "$(spin_frame "$i")" "$NC" "$tag" "$DIMC" "$stats" "$NC"
+    fi
+    sleep 0.2
+    i=$((i + 1))
+  done
+
+  wait "$dlpid" 2>/dev/null || true
+  if [ "$(cat "$rcfile" 2>/dev/null || echo 1)" != "0" ]; then
+    printf '\r%s' "$CLR_LINE"
+    die "下载失败（网络问题？可手动去 releases 页面下载）"
+  fi
+
+  size=$(wc -c <"$tmp" | tr -d ' ')
+  if [ "$size" -le 100000 ]; then
+    printf '\r%s' "$CLR_LINE"
+    die "下载的文件只有 ${size} 字节，可能不是二进制（版本 $VERSION 存在吗？）"
+  fi
+  printf '\r%s  %s✓%s 已下载 %s  %s%s%s\n' \
+    "$CLR_LINE" "$GREEN" "$NC" "$(fmt_size "$size")" "$DIMC" "$tag" "$NC"
+else
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL --retry 3 --connect-timeout 15 "$url" -o "$tmp" || die "下载失败（网络问题？可手动去 releases 页面下载）"
+  else
+    wget -q -O "$tmp" "$url" || die "下载失败（网络问题？可手动去 releases 页面下载）"
+  fi
+
+  size=$(wc -c <"$tmp" | tr -d ' ')
+  [ "$size" -gt 100000 ] || die "下载的文件只有 ${size} 字节，可能不是二进制（版本 $VERSION 存在吗？）"
+fi
 
 # ---- 安装 ----
-mv "$tmp" "$target" || die "无法写入 $target"
+if [ "$ANIM" = 1 ]; then
+  printf '  %s%s%s 正在安装到 %s%s%s' "$PURPLE" "$(spin_frame 0)" "$NC" "$DIMC" "$BIN_DIR" "$NC"
+fi
+if ! mv "$tmp" "$target" 2>/dev/null; then
+  printf '\r%s' "$CLR_LINE"
+  die "无法写入 $target"
+fi
 chmod +x "$target" 2>/dev/null || true
-trap - EXIT INT TERM
 
-green "已安装: $target"
+if [ "$ANIM" = 1 ]; then
+  printf '\r%s  %s✓%s 已安装: %s\n' "$CLR_LINE" "$GREEN" "$NC" "$target"
+  printf '%s' "$CUR_SHOW"
+else
+  green "已安装: $target"
+fi
+trap - EXIT INT TERM
 "$target" --version 2>/dev/null || true
 
 if in_path "$BIN_DIR"; then

@@ -46,6 +46,11 @@ func kubectlInstallDir() (string, error) {
 
 // installKubectl 下载官方 kubectl（dl.k8s.io，校验 sha256）到 dir；dir 为空时用 kube-token 所在目录
 func installKubectl(dir string) (string, error) {
+	return installKubectlWith(dir, nil, nil)
+}
+
+// installKubectlWith 和 installKubectl 一样，但把版本号和下载进度回调出来（TUI 用）
+func installKubectlWith(dir string, onVersion func(string), onProgress func(done, total int64)) (string, error) {
 	if dir == "" {
 		d, err := kubectlInstallDir()
 		if err != nil {
@@ -69,6 +74,9 @@ func installKubectl(dir string) (string, error) {
 	if !strings.HasPrefix(stable, "v") {
 		return "", fmt.Errorf("版本号看起来不对: %q", stable)
 	}
+	if onVersion != nil {
+		onVersion(stable)
+	}
 
 	arch, err := kubectlArch(runtime.GOARCH)
 	if err != nil {
@@ -82,7 +90,7 @@ func installKubectl(dir string) (string, error) {
 		return "", fmt.Errorf("下载校验和失败: %w", err)
 	}
 
-	tmp, err := downloadBinary(url, dir, nil)
+	tmp, err := downloadBinary(url, dir, onProgress)
 	if err != nil {
 		return "", err
 	}

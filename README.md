@@ -42,6 +42,8 @@ Windows PowerShell：
 irm https://raw.githubusercontent.com/hongmengchen/kube-token/main/install.ps1 | iex
 ```
 
+安装过程有和 `kube-token upgrade` 一样的动画：旋钮 → 下载进度条（百分比、已下载/总大小、速度）→ 校验 → 完成。输出被重定向（CI、日志）时自动退回逐行纯文本，也可以设 `NO_ANIMATION=1` 关掉。
+
 默认装到 `~/.local/bin`（root 下是 `/usr/local/bin`），如果该目录不在 `PATH` 里，脚本会打印需要追加的那一行。指定目录或版本：
 
 ```bash
@@ -82,7 +84,7 @@ kube-token  ! 没有找到 kubectl
   enter 一键安装官方 kubectl  ·  n 不安装，用内置方式  ·  esc 返回
 ```
 
-一键安装会从 `dl.k8s.io` 下载对应平台的官方二进制，校验 sha256 后放到 kube-token 自己所在的目录（这个目录本来就在 `PATH` 里），不会动系统包管理器。
+一键安装会从 `dl.k8s.io` 下载对应平台的官方二进制，校验 sha256 后放到 kube-token 自己所在的目录（这个目录本来就在 `PATH` 里），不会动系统包管理器。过程用的是和 `kube-token upgrade` 同一套动画：旋钮 + 渐变进度条 + 百分比/大小/速度 → 校验并安装 → 接着写入 token。
 
 非交互（适合脚本、新设备初始化）：
 
