@@ -11,7 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-var version = "0.3.0"
+var version = "0.3.1"
 
 func usage() {
 	fmt.Fprintf(os.Stderr, `kube-token %s — 粘贴新 token 直接替换 kubeconfig 里的旧值
@@ -68,6 +68,23 @@ func main() {
 	}
 
 	entries, scanErrs := scanEntries()
+
+	// -file 指定的文件不一定在默认扫描范围里（比如临时文件、别的目录），显式读进来
+	if *fileFlag != "" && *setToken != "" {
+		path := expandHome(*fileFlag)
+		es, err := loadEntries(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "错误: 读取 %s 失败: %v\n", path, err)
+			os.Exit(1)
+		}
+		var rest []Entry
+		for _, e := range entries {
+			if !sameFile(e.File, path) {
+				rest = append(rest, e)
+			}
+		}
+		entries = append(rest, es...)
+	}
 
 	if *setToken != "" {
 		os.Exit(runSet(*setToken, *userFlag, *fileFlag, entries, *noVerify))

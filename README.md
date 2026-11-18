@@ -23,8 +23,9 @@ kube-token  选择要更新的 user
 - **剪贴板直读**：`ctrl+y` 从系统剪贴板取 token，不用手动粘贴
 - **Vault 直接取 token**：`v` 输入一次密码，自动登录 Vault、调 creds 接口拿服务账号 token 并写入 kubeconfig；地址、挂载点、角色都只存在本机配置里，不随仓库分发
 - **自动备份**：写入前存成 `config.bak.<时间戳>`，权限 `0600`
-- **写入后校验**：从文件回读确认 token 真的变了，再用 `kubectl get --raw /version` 验证认证是否生效
-- **单二进制**：Go 编译，macOS / Linux / Windows 都能直接跑，不需要 Python、Node 之类运行时
+- **写入后校验**：从文件回读确认 token 真的变了，再请求集群 `/version` 验证认证是否生效
+- **不依赖 kubectl**：有 `kubectl` 就用它写（兼容各种边角写法），没有就在 Go 里直接改 YAML——注释、键顺序、其它字段都会保留
+- **单二进制**：Go 编译，macOS / Linux / Windows 都能直接跑，不需要 Python、Node、kubectl 之类外部命令
 - **非交互模式**：`-set-token` 给脚本用，一条命令搞定
 
 ## 安装
@@ -165,16 +166,16 @@ kube-token upgrade --force  # 版本相同也重新安装
 ## 它做了什么
 
 1. 扫描 kubeconfig，解析每个 user 的 token 和 JWT 过期时间
-2. 选中的条目：备份文件 → `kubectl config set-credentials <user> --token=<new>`
+2. 选中的条目：备份文件 → 写入新 token（有 `kubectl` 用 `kubectl config set-credentials`，没有就直接改 YAML 节点）
 3. 重新解析文件，确认 token 确实写进去了（不一致就报错）
-4. `kubectl --kubeconfig <file> get --raw /version` 验证认证：能拿到版本号就是通了；返回 `Forbidden` 也算认证成功（只是身份权限受限）
+4. 用该 user 的 token 请求集群 `/version`（有 `kubectl` 时走 `kubectl get --raw /version`）：能拿到版本号就是通了；返回 `Forbidden` 也算认证成功（只是身份权限受限）
 5. 验证失败时保留备份，并在结果页给出回滚命令
 
 ## 安全说明
 
 - token 只在内存和你本机的 kubeconfig 里，不联网、不上报、不写日志
 - 界面上只显示掩码（头 8 位 + 尾 4 位）
-- 文件写入交给 `kubectl`，它会把配置重写成标准格式；原文件完整备份在旁边的 `.bak.<时间戳>`
+- 文件写入优先交给 `kubectl`；没有它就原地改 YAML 节点（保留注释和其它字段），原文件完整备份在旁边的 `.bak.<时间戳>`
 - 备份文件权限 `0600`
 - Vault 的公司内部地址、挂载点、角色、用户只写在本地配置里（`0600`），不进入程序、不进入仓库；仓库 `.gitignore` 也屏蔽了 `config.yaml`
 

@@ -3,6 +3,9 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -148,6 +151,188 @@ func TestApplyToken(t *testing.T) {
 	}
 	if after[1].HasExec != true {
 		t.Fatal("写入不应影响其它 user")
+	}
+}
+
+// 模拟 Windows 上没有 kubectl：PATH 里找不到它，写入走原生 YAML
+func TestApplyTokenWithoutKubectl(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config")
+	withComment := "# 我的集群，手写的注释要保住\n" + sampleConfig
+	if err := os.WriteFile(path, []byte(withComment), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := loadEntries(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const newToken = "new-native-token-cccccccc"
+	backup, err := applyToken(entries[0], newToken)
+	if err != nil {
+		t.Fatalf("没有 kubectl 时写入失败: %v", err)
+	}
+	if _, err := os.Stat(backup); err != nil {
+		t.Fatalf("备份文件不存在: %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if !strings.Contains(text, "# 我的集群，手写的注释要保住") {
+		t.Fatalf("注释丢了:\n%s", text)
+	}
+	if strings.Contains(text, "old-token-aaaaaaaaaaaaaaaa") {
+		t.Fatalf("旧 token 还在:\n%s", text)
+	}
+	if !strings.Contains(text, newToken) {
+		t.Fatalf("新 token 没写进去:\n%s", text)
+	}
+
+	after, err := loadEntries(path)
+	if err != nil {
+		t.Fatalf("改完后解析失败: %v", err)
+	}
+	if after[0].Token != newToken {
+		t.Fatalf("回读 token = %q", after[0].Token)
+	}
+	if !after[1].HasExec {
+		t.Fatal("exec user 被改坏了")
+	}
+	if st, _ := os.Stat(path); st.Mode().Perm() != 0o600 {
+		t.Fatalf("文件权限变了: %v", st.Mode().Perm())
+	}
+}
+
+// exec user 本来没有 token 字段，原生写入要能加进去且不动 exec 配置
+func TestApplyTokenNativeAddsToken(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config")
+	if err := os.WriteFile(path, []byte(sampleConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := loadEntries(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const newToken = "added-token-dddddddddd"
+	if _, err := applyToken(entries[1], newToken); err != nil {
+		t.Fatalf("写入失败: %v", err)
+	}
+
+	after, err := loadEntries(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after[1].Token != newToken {
+		t.Fatalf("token = %q", after[1].Token)
+	}
+	if !after[1].HasExec {
+		t.Fatal("exec 配置被删掉了")
+	}
+	if after[0].Token != "old-token-aaaaaaaaaaaaaaaa" {
+		t.Fatal("改 user-b 时动了 user-a")
+	}
+}
+
+func TestVerifyClusterNative(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer good-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"kind":"Status","message":"Unauthorized"}`))
+			return
+		}
+		w.Write([]byte(`{"major":"1","minor":"29+"}`))
+	}))
+	defer srv.Close()
+
+	write := func(token string) string {
+		path := filepath.Join(t.TempDir(), "config")
+		cfg := fmt.Sprintf(`apiVersion: v1
+kind: Config
+current-context: ctx
+clusters:
+- name: cl
+  cluster:
+    server: %s
+    insecure-skip-tls-verify: true
+contexts:
+- name: ctx
+  context:
+    cluster: cl
+    user: u
+users:
+- name: u
+  user:
+    token: %s
+`, srv.URL, token)
+		if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	got, err := verifyCluster(write("good-token"))
+	if err != nil {
+		t.Fatalf("正常 token 验证失败: %v", err)
+	}
+	if !strings.Contains(got, "1.29") {
+		t.Fatalf("验证结果 = %q", got)
+	}
+
+	if _, err := verifyCluster(write("bad-token")); err == nil || !strings.Contains(err.Error(), "401") {
+		t.Fatalf("错误 token 应该报 401，实际: %v", err)
+	}
+}
+
+func TestVerifyClusterNativeForbidden(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"kind":"Status","message":"forbidden"}`))
+	}))
+	defer srv.Close()
+
+	path := filepath.Join(t.TempDir(), "config")
+	cfg := fmt.Sprintf(`apiVersion: v1
+kind: Config
+current-context: ctx
+clusters:
+- name: cl
+  cluster:
+    server: %s
+    insecure-skip-tls-verify: true
+contexts:
+- name: ctx
+  context:
+    cluster: cl
+    user: u
+users:
+- name: u
+  user:
+    token: tok
+`, srv.URL)
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := verifyCluster(path)
+	if err != nil {
+		t.Fatalf("403 应视为认证通过: %v", err)
+	}
+	if !strings.Contains(got, "权限受限") {
+		t.Fatalf("结果 = %q", got)
 	}
 }
 
