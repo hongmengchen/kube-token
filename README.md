@@ -28,14 +28,25 @@ kube-token  选择要更新的 user
 
 ## 安装
 
-从 [Releases](../../releases) 下载对应平台的二进制，改名放到 `PATH` 里：
+一条命令，自动识别系统和架构（macOS / Linux / Windows Git Bash）：
 
 ```bash
-chmod +x kube-token_darwin_arm64
-sudo mv kube-token_darwin_arm64 /usr/local/bin/kube-token
+curl -fsSL https://raw.githubusercontent.com/hongmengchen/kube-token/main/install.sh | sh
 ```
 
-或者用 Go 自己编：
+Windows PowerShell：
+
+```powershell
+irm https://raw.githubusercontent.com/hongmengchen/kube-token/main/install.ps1 | iex
+```
+
+默认装到 `~/.local/bin`（root 下是 `/usr/local/bin`），如果该目录不在 `PATH` 里，脚本会打印需要追加的那一行。指定目录或版本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hongmengchen/kube-token/main/install.sh | sh -s -- -b /usr/local/bin -v v0.1.0
+```
+
+也可以手动从 [Releases](../../releases) 下载对应平台的二进制放进 `PATH`，或者用 Go 自己编：
 
 ```bash
 go install github.com/hongmengchen/kube-token@latest
