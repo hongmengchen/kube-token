@@ -2,6 +2,13 @@
 
 更早的版本见 [GitHub Releases](https://github.com/hongmengchen/kube-token/releases)。
 
+## [0.6.2] - 2026-11-18
+
+### 变更
+
+- Windows 安装脚本默认装到 `%USERPROFILE%\.local\bin`，和 hmck 管理的其他工具一致
+- 安装时清理旧的 `%LOCALAPPDATA%\kube-token` 二进制和 PATH 项
+
 ## [0.6.1] - 2026-11-18
 
 ### 安全

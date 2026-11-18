@@ -52,7 +52,7 @@ irm https://raw.githubusercontent.com/hongmengchen/kube-token/main/install.ps1 |
 
 安装过程有和 `kube-token upgrade` 一样的动画：旋钮 → 下载进度条（百分比、已下载/总大小、速度）→ 校验 SHA-256 → 完成。输出被重定向（CI、日志）时自动退回逐行纯文本，也可以设 `NO_ANIMATION=1` 关掉。
 
-默认装到 `~/.local/bin`（root 下是 `/usr/local/bin`），如果该目录不在 `PATH` 里，脚本会打印需要追加的那一行。指定目录或版本：
+默认装到 `~/.local/bin`（root 下是 `/usr/local/bin`），Windows 是 `%USERPROFILE%\.local\bin`（Git Bash 里就是 `~/.local/bin`）；如果该目录不在 `PATH` 里，脚本会打印需要追加的那一行。指定目录或版本：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hongmengchen/kube-token/main/install.sh | sh -s -- -b /usr/local/bin -v v0.6.1

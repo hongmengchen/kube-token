@@ -4,7 +4,7 @@
 #
 # 参数：
 #   -Version <tag>   指定版本，如 v0.6.1（默认 latest）
-#   -BinDir <path>   安装目录（默认 %LOCALAPPDATA%\kube-token）
+#   -BinDir <path>   安装目录（默认 %USERPROFILE%\.local\bin，和 hmck、npm-token 相同）
 #
 # 环境变量：
 #   NO_ANIMATION=1   不播放安装动画（输出被重定向时会自动关闭）
@@ -46,7 +46,7 @@ $Url = "$Base/$Asset"
 
 if (-not $BinDir) {
     if ($env:INSTALL_DIR) { $BinDir = $env:INSTALL_DIR }
-    else { $BinDir = Join-Path $env:LOCALAPPDATA "kube-token" }
+    else { $BinDir = Join-Path $HOME ".local\bin" }
 }
 
 Write-Host "下载: $Url" -ForegroundColor DarkGray
@@ -211,19 +211,27 @@ try {
     Fail "写入 $Target 失败（程序是否正在运行？）`n$($_.Exception.Message)"
 }
 
-# 持久化：写进用户 PATH，供以后新开的终端使用
+# 旧版装在 %LOCALAPPDATA%\kube-token：清掉旧副本，PATH 里也只留统一目录
+$legacyDir = ""
+if ($env:LOCALAPPDATA) { $legacyDir = (Join-Path $env:LOCALAPPDATA "kube-token").TrimEnd("\") }
+if ($legacyDir -and $legacyDir -ne $BinDir.TrimEnd("\")) {
+    Remove-Item -Force -LiteralPath (Join-Path $legacyDir $Exe) -ErrorAction SilentlyContinue
+    Remove-Item -Force -LiteralPath $legacyDir -ErrorAction SilentlyContinue
+}
+
+# 持久化：统一目录放用户 PATH 最前面，旧目录去掉
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-if (-not $userPath) { $userPath = "" }
-if ((($userPath -split ";") | Where-Object { $_ }) -notcontains $BinDir) {
-    $newPath = if ($userPath) { "$userPath;$BinDir" } else { $BinDir }
+$parts = @()
+if ($userPath) { $parts = @($userPath -split ";" | Where-Object { $_.Trim() -ne "" }) }
+$keep = @($parts | Where-Object { $_.TrimEnd("\") -ne $BinDir.TrimEnd("\") -and $_.TrimEnd("\") -ne $legacyDir })
+$newPath = (@($BinDir) + $keep) -join ";"
+if ($newPath -ne $userPath) {
     [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
-    Write-Host "$BinDir 已写入用户 PATH" -ForegroundColor DarkGray
+    Write-Host "$BinDir 已放到用户 PATH 最前面（新开终端生效）" -ForegroundColor DarkGray
 }
 
 # 当前进程：立刻生效，不用重开终端
-if ((($env:Path -split ";") | Where-Object { $_ }) -notcontains $BinDir) {
-    $env:Path = if ($env:Path) { "$env:Path;$BinDir" } else { $BinDir }
-}
+$env:Path = $BinDir + ";" + $env:Path
 
 if ($Animate) {
     [Console]::ForegroundColor = [ConsoleColor]::Green
