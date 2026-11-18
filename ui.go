@@ -30,13 +30,13 @@ const (
 )
 
 var (
-	cAccent = lipgloss.AdaptiveColor{Light: "#6D28D9", Dark: "#A78BFA"}
-	cDim    = lipgloss.AdaptiveColor{Light: "#6B7280", Dark: "#7C8794"}
-	cText   = lipgloss.AdaptiveColor{Light: "#111827", Dark: "#E5E7EB"}
+	cAccent = lipgloss.AdaptiveColor{Light: "#334155", Dark: "#CBD5E1"}
+	cDim    = lipgloss.AdaptiveColor{Light: "#64748B", Dark: "#94A3B8"}
+	cText   = lipgloss.AdaptiveColor{Light: "#0F172A", Dark: "#E2E8F0"}
 	cGood   = lipgloss.AdaptiveColor{Light: "#047857", Dark: "#34D399"}
 	cBad    = lipgloss.AdaptiveColor{Light: "#B91C1C", Dark: "#F87171"}
 	cWarn   = lipgloss.AdaptiveColor{Light: "#B45309", Dark: "#FBBF24"}
-	cLine   = lipgloss.AdaptiveColor{Light: "#E5E7EB", Dark: "#333A45"}
+	cLine   = lipgloss.AdaptiveColor{Light: "#E2E8F0", Dark: "#334155"}
 
 	titleStyle  = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
 	accentStyle = lipgloss.NewStyle().Foreground(cAccent)
