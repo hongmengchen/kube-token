@@ -37,6 +37,13 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+in_path() {
+  case ":${PATH}:" in
+    *":$1:"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 red()   { printf '\033[31m%s\033[0m\n' "$*" >&2; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
 dim()   { printf '\033[2m%s\033[0m\n' "$*"; }
@@ -79,7 +86,14 @@ if [ -z "$BIN_DIR" ]; then
   elif [ "$(id -u)" = "0" ]; then
     BIN_DIR="/usr/local/bin"
   else
-    BIN_DIR="$HOME/.local/bin"
+    # 优先选一个「可写且已在 PATH 里」的目录，这样装完当前终端就能直接用
+    for d in "$HOME/.local/bin" "$HOME/bin" /usr/local/bin; do
+      if [ -d "$d" ] && [ -w "$d" ] && in_path "$d"; then
+        BIN_DIR="$d"
+        break
+      fi
+    done
+    [ -n "$BIN_DIR" ] || BIN_DIR="$HOME/.local/bin"
   fi
 fi
 mkdir -p "$BIN_DIR" 2>/dev/null || die "无法创建目录 $BIN_DIR"
@@ -113,14 +127,23 @@ trap - EXIT INT TERM
 green "已安装: $target"
 "$target" --version 2>/dev/null || true
 
-case ":${PATH}:" in
-  *":${BIN_DIR}:"*) ;;
-  *)
-    echo
-    echo "$BIN_DIR 不在 PATH 里，加一行："
-    echo "  echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.zshrc && exec zsh"
-    ;;
-esac
+if in_path "$BIN_DIR"; then
+  echo
+  green "$BIN 现在就能用（当前终端直接运行 $BIN）"
+else
+  rc="$HOME/.profile"
+  case "${SHELL:-}" in
+    */zsh)  rc="$HOME/.zshrc" ;;
+    */bash) rc="$HOME/.bashrc" ;;
+  esac
+  echo
+  echo "$BIN_DIR 不在 PATH 里。"
+  echo "  当前终端立刻生效："
+  echo "    export PATH=\"$BIN_DIR:\$PATH\""
+  echo "  以后每个终端都生效："
+  echo "    echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> $rc"
+  echo "  然后重开终端，或执行 source $rc"
+fi
 
 echo
 dim "下一步: 运行 $BIN"

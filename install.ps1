@@ -49,14 +49,25 @@ if ($item.Length -lt 100000) {
     exit 1
 }
 
+# 持久化：写进用户 PATH，供以后新开的终端使用
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if (-not $userPath) { $userPath = "" }
-if (($userPath -split ";") -notcontains $BinDir) {
+if ((($userPath -split ";") | Where-Object { $_ }) -notcontains $BinDir) {
     $newPath = if ($userPath) { "$userPath;$BinDir" } else { $BinDir }
     [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
-    Write-Host "$BinDir 已加入用户 PATH（重新打开终端后生效）" -ForegroundColor Yellow
+    Write-Host "$BinDir 已写入用户 PATH" -ForegroundColor DarkGray
+}
+
+# 当前进程：立刻生效，不用重开终端
+if ((($env:Path -split ";") | Where-Object { $_ }) -notcontains $BinDir) {
+    $env:Path = if ($env:Path) { "$env:Path;$BinDir" } else { $BinDir }
 }
 
 Write-Host "已安装: $Target" -ForegroundColor Green
 & $Target --version
-Write-Host "下一步: 重新打开终端，运行 kube-token" -ForegroundColor DarkGray
+
+if (Get-Command kube-token -ErrorAction SilentlyContinue) {
+    Write-Host "当前终端已可用，直接运行: kube-token" -ForegroundColor Green
+} else {
+    Write-Host "新开一个终端后运行: kube-token" -ForegroundColor Yellow
+}
